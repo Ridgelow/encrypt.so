@@ -37,7 +37,11 @@ export default function NewChatScreen() {
             onPress={() =>
               router.push({
                 pathname: "/conversation/[id]",
-                params: { id: item.id, name: item.name.split(" ")[0] },
+                params: {
+                  id: item.userId ?? item.id,
+                  name: item.name.split(" ")[0],
+                  ...(item.userId ? { userId: item.userId } : {}),
+                },
               })
             }
             style={styles.row}

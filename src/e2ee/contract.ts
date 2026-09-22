@@ -55,7 +55,17 @@
  *
  * `GET /users/:userId/prekey-bundle` returns
  * `{ userId, bundles: PublicPrekeyBundle[] }` and consumes one one-time
- * prekey per device. Session setup is not implemented in this change.
+ * prekey per device.
+ *
+ * ## 1:1 sessions
+ *
+ * `src/e2ee/session.ts` turns that public bundle into an SDK `PreKeyBundle`
+ * and runs the initiator handshake. The worker still does not publish a
+ * registration id or an ML-KEM prekey. The registration id stored on the
+ * session is derived locally from the identity key (it is not an input to
+ * X3DH). Without KEM material the SDK takes its classical X3DH compatibility
+ * path. Session records stay in Secure Store, keyed by peer user id and
+ * peer device id. Realtime transport is a later change.
  */
 
 import type { PrekeyBundleUpload } from "@/services/api";
