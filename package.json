@@ -8,14 +8,17 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
     "workers:typecheck": "npm --prefix workers run typecheck"
   },
   "dependencies": {
     "@expo-google-fonts/barlow": "^0.4.1",
     "@expo-google-fonts/saira-condensed": "^0.4.1",
     "@expo/metro-runtime": "~57.0.16",
+    "@open-e2ee/signal-protocol-sdk": "^3.0.0",
     "expo": "~57.0.24",
     "expo-constants": "~57.0.19",
+    "expo-crypto": "~57.0.3",
     "expo-font": "~57.0.4",
     "expo-linking": "~57.0.10",
     "expo-router": "~57.0.22",
@@ -38,7 +41,9 @@
   "devDependencies": {
     "@types/react": "~19.2.2",
     "babel-preset-expo": "^57.0.12",
-    "typescript": "~5.9.2"
+    "typescript": "~5.9.2",
+    "vite": "^8.3.0",
+    "vitest": "^5.0.1"
   },
   "private": true
 }
