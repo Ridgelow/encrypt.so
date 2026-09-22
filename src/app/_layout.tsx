@@ -9,11 +9,13 @@ import { SairaCondensed_600SemiBold } from "@expo-google-fonts/saira-condensed";
 import * as SplashScreen from "expo-splash-screen";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
+import { usePushLifecycle } from "@/services/push";
 import { colors } from "@/theme/tokens";
 
 SplashScreen.preventAutoHideAsync().catch(() => undefined);
 
 export default function RootLayout() {
+  usePushLifecycle();
   const [loaded] = useFonts({
     Hacked: require("../../assets/fonts/HACKED.ttf"),
     PixelOperatorMono: require("../../assets/fonts/PixelOperatorMono.ttf"),

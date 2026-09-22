@@ -112,6 +112,30 @@ export type ConversationList = {
   conversations: Conversation[];
 };
 
+export type PushPlatform = "ios" | "android";
+
+export type PushRegisterInput = {
+  expoPushToken: string;
+  platform: PushPlatform;
+  deviceId?: string;
+};
+
+export type PushRegisterResponse = {
+  registered: true;
+};
+
+export type PushUnregisterResponse = {
+  unregistered: true;
+};
+
+/** Device push-token routes. Payloads are installation metadata, not messages. */
+export interface PushClient {
+  /** POST /push/register { expoPushToken, platform, deviceId? } */
+  registerPushToken(token: string, body: PushRegisterInput): Promise<PushRegisterResponse>;
+  /** POST /push/unregister { expoPushToken } */
+  unregisterPushToken(token: string, expoPushToken: string): Promise<PushUnregisterResponse>;
+}
+
 /** Ciphertext persistence. Auth routes stay on {@link AuthClient}. */
 export interface MessagingClient {
   /** POST /conversations { peerUserId } → conversation */
@@ -157,6 +181,7 @@ export type AuthClientOptions = {
 };
 
 const PLAINTEXT_FIELD = /^(plaintext|plain_text|text|body|message|content)$/i;
+const PUSH_CONTENT_FIELD = /^(ciphertext|preview|subject)$/i;
 
 function rejectPrivateFields(value: unknown): void {
   if (Array.isArray(value)) {
@@ -183,6 +208,20 @@ function rejectPlaintextFields(value: unknown): void {
       throw new ApiError("plaintext is not accepted", 400);
     }
     rejectPlaintextFields(child);
+  }
+}
+
+function rejectPushContentFields(value: unknown): void {
+  if (Array.isArray(value)) {
+    for (const item of value) rejectPushContentFields(item);
+    return;
+  }
+  if (typeof value !== "object" || value === null) return;
+  for (const [key, child] of Object.entries(value)) {
+    if (PUSH_CONTENT_FIELD.test(key) || PLAINTEXT_FIELD.test(key)) {
+      throw new ApiError("plaintext is not accepted", 400);
+    }
+    rejectPushContentFields(child);
   }
 }
 
@@ -437,6 +476,28 @@ async function readError(res: Response): Promise<string> {
     return `request failed (${res.status})`;
   }
   return `request failed (${res.status})`;
+}
+
+/** Live push-token client. `baseUrl` is the worker origin with no path. */
+export function createPushClient(options: AuthClientOptions): PushClient {
+  const baseUrl = options.baseUrl.replace(/\/$/, "");
+  const transport = { baseUrl, fetchImpl: options.fetchImpl, timeoutMs: options.timeoutMs };
+  return {
+    async registerPushToken(token, body) {
+      rejectPrivateFields(body);
+      rejectPushContentFields(body);
+      return request("/push/register", { ...transport, method: "POST", token, body });
+    },
+    async unregisterPushToken(token, expoPushToken) {
+      rejectPushContentFields({ expoPushToken });
+      return request("/push/unregister", {
+        ...transport,
+        method: "POST",
+        token,
+        body: { expoPushToken },
+      });
+    },
+  };
 }
 
 function liveMessages(): MessagingClient {

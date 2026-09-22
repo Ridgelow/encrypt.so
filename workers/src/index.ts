@@ -3,6 +3,7 @@ import { requireUser, startPhone, verifyPhone } from "./auth";
 import { HttpError, empty, json, readJson } from "./http";
 import { createDevice, getMe, getPrekeyBundle, putPrekeyBundle } from "./identity";
 import { createConversation, listConversations, listMessages, postMessage, requireMember } from "./messages";
+import { notifyNewMessage, registerPushToken, unregisterPushToken } from "./push";
 import { ConversationRoom } from "./realtime";
 
 export { ConversationRoom };
@@ -53,7 +54,7 @@ function pathOf(request: Request): string {
   return path || "/";
 }
 
-async function route(request: Request, env: Env): Promise<Response> {
+async function route(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const attachment = await dispatchAttachment(request, attachmentDeps(env), (req) => requireUser(req, env));
   if (attachment) return attachment;
 
@@ -119,6 +120,13 @@ async function route(request: Request, env: Env): Promise<Response> {
     const userId = await requireUser(request, env);
     if (method === "POST") {
       const result = await postMessage(env, userId, conversationId, await readJson(request));
+      if (result.created) {
+        ctx.waitUntil(
+          notifyNewMessage(env, { conversationId, senderUserId: userId }).catch(() => {
+            console.error("push notify failed");
+          }),
+        );
+      }
       return json(result.message, result.created ? 201 : 200);
     }
     if (method === "GET") {
@@ -130,6 +138,16 @@ async function route(request: Request, env: Env): Promise<Response> {
         }),
       );
     }
+  }
+
+  if (method === "POST" && path === "/push/register") {
+    const userId = await requireUser(request, env);
+    return json(await registerPushToken(env, userId, await readJson(request)));
+  }
+
+  if (method === "POST" && path === "/push/unregister") {
+    const userId = await requireUser(request, env);
+    return json(await unregisterPushToken(env, userId, await readJson(request)));
   }
 
   throw new HttpError(404, "not found");
@@ -157,10 +175,10 @@ async function realtimeUpgrade(request: Request, env: Env): Promise<Response> {
 }
 
 export default {
-  async fetch(request, env): Promise<Response> {
+  async fetch(request, env, ctx): Promise<Response> {
     if (request.method === "OPTIONS") return empty();
     try {
-      return await route(request, env);
+      return await route(request, env, ctx);
     } catch (err) {
       if (err instanceof HttpError) return json({ error: err.message }, err.status);
       console.error(err);

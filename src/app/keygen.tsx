@@ -4,6 +4,7 @@ import { router } from "expo-router";
 import { DeviceKeyStoreUnavailableError } from "@/e2ee";
 import { IconCheck } from "@/components/icons";
 import { useDeviceKeys } from "@/hooks/useDeviceKeys";
+import { syncPushRegistration } from "@/services/push";
 import { Screen } from "@/components/ui/Screen";
 import { colors } from "@/theme/tokens";
 import { typography } from "@/theme/typography";
@@ -22,10 +23,14 @@ export default function KeyGenScreen() {
   const { registerDevice } = useDeviceKeys();
 
   useEffect(() => {
-    void registerDevice().catch((error: unknown) => {
-      if (error instanceof DeviceKeyStoreUnavailableError) return;
-      console.warn("[encrypt] device key provisioning did not complete");
-    });
+    void registerDevice()
+      .catch((error: unknown) => {
+        if (error instanceof DeviceKeyStoreUnavailableError) return;
+        console.warn("[encrypt] device key provisioning did not complete");
+      })
+      .finally(() => {
+        void syncPushRegistration();
+      });
   }, [registerDevice]);
 
   useEffect(() => {

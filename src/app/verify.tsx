@@ -7,6 +7,7 @@ import { Screen } from "@/components/ui/Screen";
 import { ScreenHeader } from "@/components/ui/ScreenHeader";
 import { isApiConfigured, startPhoneAuth, toE164, verifyPhoneAuth } from "@/services/api";
 import { ApiError, isApiUnavailable } from "@/services/errors";
+import { syncPushRegistration } from "@/services/push";
 import { saveSession } from "@/services/session";
 import { colors } from "@/theme/tokens";
 import { typography } from "@/theme/typography";
@@ -49,6 +50,7 @@ export default function VerifyCodeScreen() {
       } catch {
         // Keystore is unavailable on web. The verified session still continues.
       }
+      void syncPushRegistration();
       router.push("/keygen");
     } catch (err) {
       if (isApiUnavailable(err)) {
