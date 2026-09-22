@@ -5,15 +5,76 @@ import { Button } from "@/components/ui/Button";
 import { Caret } from "@/components/ui/Caret";
 import { Screen } from "@/components/ui/Screen";
 import { ScreenHeader } from "@/components/ui/ScreenHeader";
+import { isApiConfigured, startPhoneAuth, toE164, verifyPhoneAuth } from "@/services/api";
+import { ApiError, isApiUnavailable } from "@/services/errors";
+import { saveSession } from "@/services/session";
 import { colors } from "@/theme/tokens";
 import { typography } from "@/theme/typography";
 
 const LENGTH = 6;
 
 export default function VerifyCodeScreen() {
-  const { phone } = useLocalSearchParams<{ phone?: string }>();
+  const { phone, e164, challengeId: challengeParam } = useLocalSearchParams<{
+    phone?: string;
+    e164?: string;
+    challengeId?: string;
+  }>();
   const [code, setCode] = useState("");
+  const [challengeId, setChallengeId] = useState(typeof challengeParam === "string" ? challengeParam : "");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
   const inputRef = useRef<TextInput>(null);
+
+  function goOffline() {
+    router.push("/keygen");
+  }
+
+  async function onVerify() {
+    if (busy) return;
+    if (!challengeId) {
+      goOffline();
+      return;
+    }
+    if (code.length < LENGTH) {
+      setNote("enter the code");
+      return;
+    }
+
+    setBusy(true);
+    setNote("");
+    try {
+      const session = await verifyPhoneAuth(challengeId, code);
+      try {
+        await saveSession(session.sessionToken, session.userId);
+      } catch {
+        // Keystore is unavailable on web. The verified session still continues.
+      }
+      router.push("/keygen");
+    } catch (err) {
+      if (isApiUnavailable(err)) {
+        goOffline();
+        return;
+      }
+      setNote(err instanceof ApiError ? err.message : "could not verify");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onResend() {
+    setCode("");
+    setNote("");
+    const target = (typeof e164 === "string" && e164) || (typeof phone === "string" ? toE164(phone) : "");
+    if (!target || !isApiConfigured()) return;
+    try {
+      const next = await startPhoneAuth(target);
+      setChallengeId(next.challengeId);
+    } catch (err) {
+      if (!isApiUnavailable(err)) {
+        setNote(err instanceof ApiError ? err.message : "could not resend");
+      }
+    }
+  }
 
   return (
     <Screen>
@@ -46,12 +107,13 @@ export default function VerifyCodeScreen() {
           autoFocus
           style={styles.hidden}
         />
-        <Pressable onPress={() => setCode("")} style={{ marginTop: 20 }}>
+        <Pressable onPress={() => void onResend()} style={{ marginTop: 20 }}>
           <Text style={[typography.mono, { fontSize: 13 }]}>Resend code</Text>
         </Pressable>
+        {note ? <Text style={[typography.mono, styles.note]}>{note}</Text> : null}
       </Pressable>
       <View style={styles.footer}>
-        <Button label="Verify" onPress={() => router.push("/keygen")} />
+        <Button label="Verify" disabled={busy} onPress={() => void onVerify()} />
       </View>
     </Screen>
   );
@@ -91,6 +153,11 @@ const styles = StyleSheet.create({
     opacity: 0,
     height: 1,
     width: 1,
+  },
+  note: {
+    fontSize: 12,
+    color: colors.smoke,
+    marginTop: 16,
   },
   footer: {
     paddingHorizontal: 22,

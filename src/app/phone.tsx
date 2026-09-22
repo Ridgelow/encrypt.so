@@ -5,11 +5,40 @@ import { Button } from "@/components/ui/Button";
 import { Caret } from "@/components/ui/Caret";
 import { Screen } from "@/components/ui/Screen";
 import { ScreenHeader } from "@/components/ui/ScreenHeader";
+import { isApiConfigured, startPhoneAuth, toE164 } from "@/services/api";
+import { ApiError, isApiUnavailable } from "@/services/errors";
 import { colors } from "@/theme/tokens";
 import { typography } from "@/theme/typography";
 
 export default function PhoneEntryScreen() {
   const [phone, setPhone] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+
+  async function onContinue() {
+    if (busy) return;
+    const shown = phone.trim() || "(555) 010-0192";
+    const e164 = toE164(shown);
+    if (!isApiConfigured() || !e164) {
+      router.push({ pathname: "/verify", params: { phone: shown } });
+      return;
+    }
+
+    setBusy(true);
+    setNote("");
+    try {
+      const { challengeId } = await startPhoneAuth(e164);
+      router.push({ pathname: "/verify", params: { phone: shown, e164, challengeId } });
+    } catch (err) {
+      if (isApiUnavailable(err)) {
+        router.push({ pathname: "/verify", params: { phone: shown } });
+        return;
+      }
+      setNote(err instanceof ApiError ? err.message : "could not start verification");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <Screen>
@@ -36,14 +65,10 @@ export default function PhoneEntryScreen() {
             {!phone ? <Caret /> : null}
           </View>
         </View>
+        {note ? <Text style={[typography.mono, styles.note]}>{note}</Text> : null}
       </View>
       <View style={styles.footer}>
-        <Button
-          label="Continue"
-          onPress={() =>
-            router.push({ pathname: "/verify", params: { phone: phone || "(555) 010-0192" } })
-          }
-        />
+        <Button label="Continue" disabled={busy} onPress={() => void onContinue()} />
       </View>
     </Screen>
   );
@@ -90,6 +115,11 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: colors.chalk,
     padding: 0,
+  },
+  note: {
+    fontSize: 12,
+    color: colors.smoke,
+    marginTop: 14,
   },
   footer: {
     paddingHorizontal: 22,

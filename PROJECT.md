@@ -38,6 +38,7 @@ Use `encrypt_` (trailing underscore) in the native UI chrome — splash, nav wor
 - **D1** (SQLite) for metadata/session data; move to Postgres via Hyperdrive if relational needs outgrow D1
 - **R2** for encrypted attachments/file blobs — server never has plaintext
 - **KV** for session tokens / rate limiting
+- Worker source: `workers/` (auth + public prekey bundles). See `workers/README.md`.
 - Any marketing or web landing page → **Cloudflare Pages**
 
 ## Brand kit — BLACKOUT
