@@ -9,7 +9,19 @@ npm install --legacy-peer-deps
 npx expo start
 ```
 
-Then open in Expo Go (iOS/Android) or press `i` / `a` for simulators.
+Then open in Expo Go (iOS/Android) or press `i` / `a` for simulators. After `expo-dev-client` is installed, `npx expo start` targets a development build; pass `--go` to keep using Expo Go.
+
+## Ship
+
+EAS profiles are in `eas.json`. Identity stays `encrypt_` / slug `encrypt-so` / scheme `encryptso` / bundle id and package `so.encrypt.app`.
+
+```bash
+npm run build:development   # dev client, internal (device)
+npm run build:preview       # internal distribution (Android APK)
+npm run build:production    # store
+```
+
+The first `eas build` links an Expo project (`eas login`). Do not commit credentials, `.env`, or Cloudflare tokens.
 
 ## Frontend map
 

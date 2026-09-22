@@ -9,7 +9,10 @@
     "web": "expo start --web",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "workers:typecheck": "npm --prefix workers run typecheck"
+    "workers:typecheck": "npm --prefix workers run typecheck",
+    "build:development": "npx eas-cli build --profile development",
+    "build:preview": "npx eas-cli build --profile preview",
+    "build:production": "npx eas-cli build --profile production"
   },
   "dependencies": {
     "@expo-google-fonts/barlow": "^0.4.1",
@@ -19,6 +22,7 @@
     "expo": "~57.0.24",
     "expo-constants": "~57.0.19",
     "expo-crypto": "~57.0.3",
+    "expo-dev-client": "~57.0.19",
     "expo-font": "~57.0.4",
     "expo-linking": "~57.0.10",
     "expo-router": "~57.0.22",
