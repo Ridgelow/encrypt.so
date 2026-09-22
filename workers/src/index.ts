@@ -1,6 +1,7 @@
 import { requireUser, startPhone, verifyPhone } from "./auth";
 import { HttpError, empty, json, readJson } from "./http";
 import { createDevice, getMe, getPrekeyBundle, putPrekeyBundle } from "./identity";
+import { createConversation, listConversations, listMessages, postMessage } from "./messages";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -48,6 +49,37 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (!UUID.test(userId)) throw new HttpError(404, "no prekey bundle");
     await requireUser(request, env);
     return json(await getPrekeyBundle(env, userId));
+  }
+
+  if (method === "POST" && path === "/conversations") {
+    const userId = await requireUser(request, env);
+    const result = await createConversation(env, userId, await readJson(request));
+    return json(result.conversation, result.created ? 201 : 200);
+  }
+
+  if (method === "GET" && path === "/conversations") {
+    const userId = await requireUser(request, env);
+    return json({ conversations: await listConversations(env, userId) });
+  }
+
+  const messagesPath = /^\/conversations\/([^/]+)\/messages$/.exec(path);
+  if (messagesPath) {
+    const conversationId = messagesPath[1];
+    if (!UUID.test(conversationId)) throw new HttpError(404, "conversation not found");
+    const userId = await requireUser(request, env);
+    if (method === "POST") {
+      const result = await postMessage(env, userId, conversationId, await readJson(request));
+      return json(result.message, result.created ? 201 : 200);
+    }
+    if (method === "GET") {
+      const url = new URL(request.url);
+      return json(
+        await listMessages(env, userId, conversationId, {
+          cursor: url.searchParams.get("cursor"),
+          limit: url.searchParams.get("limit"),
+        }),
+      );
+    }
   }
 
   throw new HttpError(404, "not found");

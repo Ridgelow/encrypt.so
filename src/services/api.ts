@@ -64,6 +64,63 @@ export type GetPrekeyBundleResponse = {
   bundles: PublicPrekeyBundle[];
 };
 
+export type ConversationMember = {
+  userId: string;
+  joinedAt: number;
+};
+
+export type Conversation = {
+  id: string;
+  createdAt: number;
+  members: ConversationMember[];
+};
+
+/** Opaque ciphertext row. The worker does not have a plaintext field. */
+export type CiphertextMessage = {
+  id: string;
+  conversationId: string;
+  senderDeviceId: string;
+  ciphertext: string;
+  contentType: string;
+  createdAt: number;
+  expireAt: number | null;
+  clientId: string | null;
+};
+
+export type PostMessageInput = {
+  ciphertext: string;
+  contentType?: string;
+  clientId?: string;
+  /** Required when the session has more than one device. */
+  senderDeviceId?: string;
+  expireAt?: number;
+};
+
+export type MessagePage = {
+  messages: CiphertextMessage[];
+  nextCursor: string | null;
+};
+
+export type ConversationList = {
+  conversations: Conversation[];
+};
+
+/** Ciphertext persistence. Auth routes stay on {@link AuthClient}. */
+export interface MessagingClient {
+  /** POST /conversations { peerUserId } → conversation */
+  createConversation(token: string, peerUserId: string): Promise<Conversation>;
+  /** GET /conversations */
+  listConversations(token: string): Promise<ConversationList>;
+  /** POST /conversations/:id/messages — ciphertext only */
+  postMessage(token: string, conversationId: string, body: PostMessageInput): Promise<CiphertextMessage>;
+  /** GET /conversations/:id/messages?cursor=&limit= */
+  listMessages(
+    token: string,
+    conversationId: string,
+    query?: { cursor?: string; limit?: number },
+  ): Promise<MessagePage>;
+}
+
 /** Locked Auth worker surface. Live and mock clients both implement this. */
 export interface AuthClient {
   /** POST /auth/phone/start { phone } → { challengeId } */
@@ -86,6 +143,8 @@ export type AuthClientOptions = {
   timeoutMs?: number;
 };
 
+const PLAINTEXT_FIELD = /^(plaintext|plain_text|text|body|message|content)$/i;
+
 function rejectPrivateFields(value: unknown): void {
   if (Array.isArray(value)) {
     for (const item of value) rejectPrivateFields(item);
@@ -97,6 +156,20 @@ function rejectPrivateFields(value: unknown): void {
       throw new ApiError("private keys are not accepted", 400);
     }
     rejectPrivateFields(child);
+  }
+}
+
+function rejectPlaintextFields(value: unknown): void {
+  if (Array.isArray(value)) {
+    for (const item of value) rejectPlaintextFields(item);
+    return;
+  }
+  if (typeof value !== "object" || value === null) return;
+  for (const [key, child] of Object.entries(value)) {
+    if (PLAINTEXT_FIELD.test(key)) {
+      throw new ApiError("plaintext is not accepted", 400);
+    }
+    rejectPlaintextFields(child);
   }
 }
 
@@ -247,4 +320,77 @@ export function putPrekeyBundle(
 /** GET /users/:userId/prekey-bundle — consumes one one-time prekey per device */
 export function getPrekeyBundle(token: string, userId: string): Promise<GetPrekeyBundleResponse> {
   return live().getPrekeyBundle(token, userId);
+}
+
+/** Live ciphertext client. `baseUrl` is the worker origin with no path. */
+export function createMessagingClient(options: AuthClientOptions): MessagingClient {
+  const baseUrl = options.baseUrl.replace(/\/$/, "");
+  const transport = { baseUrl, fetchImpl: options.fetchImpl, timeoutMs: options.timeoutMs };
+  return {
+    createConversation(token, peerUserId) {
+      return request("/conversations", {
+        ...transport,
+        method: "POST",
+        token,
+        body: { peerUserId },
+      });
+    },
+    listConversations(token) {
+      return request("/conversations", { ...transport, token });
+    },
+    async postMessage(token, conversationId, body) {
+      rejectPrivateFields(body);
+      rejectPlaintextFields(body);
+      return request(`/conversations/${encodeURIComponent(conversationId)}/messages`, {
+        ...transport,
+        method: "POST",
+        token,
+        body,
+      });
+    },
+    listMessages(token, conversationId, query) {
+      const params = new URLSearchParams();
+      if (query?.cursor) params.set("cursor", query.cursor);
+      if (query?.limit != null) params.set("limit", String(query.limit));
+      const qs = params.toString();
+      return request(
+        `/conversations/${encodeURIComponent(conversationId)}/messages${qs ? `?${qs}` : ""}`,
+        { ...transport, token },
+      );
+    },
+  };
+}
+
+function liveMessages(): MessagingClient {
+  const base = baseUrl();
+  if (!base) throw new ApiError("API URL is not configured", 0);
+  return createMessagingClient({ baseUrl: base });
+}
+
+/** POST /conversations */
+export function createConversation(token: string, peerUserId: string): Promise<Conversation> {
+  return liveMessages().createConversation(token, peerUserId);
+}
+
+/** GET /conversations */
+export function listConversations(token: string): Promise<ConversationList> {
+  return liveMessages().listConversations(token);
+}
+
+/** POST /conversations/:id/messages — ciphertext only */
+export function postMessage(
+  token: string,
+  conversationId: string,
+  body: PostMessageInput,
+): Promise<CiphertextMessage> {
+  return liveMessages().postMessage(token, conversationId, body);
+}
+
+/** GET /conversations/:id/messages */
+export function listMessages(
+  token: string,
+  conversationId: string,
+  query?: { cursor?: string; limit?: number },
+): Promise<MessagePage> {
+  return liveMessages().listMessages(token, conversationId, query);
 }

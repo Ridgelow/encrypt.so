@@ -1,12 +1,12 @@
 # encrypt.so API
 
-Cloudflare Worker for auth and public identity. SMS is stubbed: every challenge accepts code `000000`. No private keys are stored.
+Cloudflare Worker for auth, public identity, and ciphertext persistence. SMS is stubbed: every challenge accepts code `000000`. No private keys and no plaintext messages are stored.
 
 ## Bindings
 
 | Binding | Type | Name | Used for |
 | --- | --- | --- | --- |
-| `DB` | D1 | `encrypt-so` | users, devices, public prekey bundles |
+| `DB` | D1 | `encrypt-so` | users, devices, public prekey bundles, conversations, memberships, ciphertext |
 | `SESSIONS` | KV | (namespace you create) | phone challenges, session tokens, start rate limits |
 
 `wrangler.toml` ships with placeholder IDs. Local `wrangler dev` ignores them and uses local D1/KV. Replace the IDs before `wrangler deploy`.
@@ -85,6 +85,58 @@ curl -s "$BASE/users/$USER/prekey-bundle" -H "authorization: Bearer $TOKEN"
 
 The start handler also prints `sms stub challenge=… code=000000` to the worker log.
 
+### Conversations and ciphertext
+
+Creates a 1:1 conversation, stores one opaque ciphertext, then lists it. The worker does not decode the blob. A second `POST /conversations` with the same pair returns the existing conversation. With one registered device, `senderDeviceId` can be omitted.
+
+```bash
+BASE=http://127.0.0.1:8787
+
+ALICE_CHALLENGE=$(curl -s -X POST "$BASE/auth/phone/start" \
+  -H 'content-type: application/json' \
+  -d '{"phone":"+15550100201"}' | jq -r .challengeId)
+ALICE=$(curl -s -X POST "$BASE/auth/phone/verify" \
+  -H 'content-type: application/json' \
+  -d "{\"challengeId\":\"$ALICE_CHALLENGE\",\"code\":\"000000\"}")
+ALICE_TOKEN=$(echo "$ALICE" | jq -r .sessionToken)
+
+BOB_CHALLENGE=$(curl -s -X POST "$BASE/auth/phone/start" \
+  -H 'content-type: application/json' \
+  -d '{"phone":"+15550100202"}' | jq -r .challengeId)
+BOB=$(curl -s -X POST "$BASE/auth/phone/verify" \
+  -H 'content-type: application/json' \
+  -d "{\"challengeId\":\"$BOB_CHALLENGE\",\"code\":\"000000\"}")
+BOB_TOKEN=$(echo "$BOB" | jq -r .sessionToken)
+BOB_ID=$(echo "$BOB" | jq -r .userId)
+
+curl -s -X POST "$BASE/devices" \
+  -H "authorization: Bearer $ALICE_TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"name":"primary"}' >/dev/null
+
+CONVO=$(curl -s -X POST "$BASE/conversations" \
+  -H "authorization: Bearer $ALICE_TOKEN" \
+  -H 'content-type: application/json' \
+  -d "{\"peerUserId\":\"$BOB_ID\"}")
+CONVO_ID=$(echo "$CONVO" | jq -r .id)
+
+# Opaque base64. The worker stores this string and does not decode it.
+CIPHERTEXT='b3BhcXVlLWNpcGhlcnRleHQtYmxvYg=='
+
+curl -s -X POST "$BASE/conversations/$CONVO_ID/messages" \
+  -H "authorization: Bearer $ALICE_TOKEN" \
+  -H 'content-type: application/json' \
+  -d "{\"ciphertext\":\"$CIPHERTEXT\",\"contentType\":\"application/octet-stream\",\"clientId\":\"msg-1\"}"
+
+curl -s "$BASE/conversations/$CONVO_ID/messages?limit=20" \
+  -H "authorization: Bearer $BOB_TOKEN" \
+  | jq -e --arg c "$CIPHERTEXT" '.messages[0].ciphertext == $c and (.messages[0] | has("plaintext") | not)'
+
+curl -s "$BASE/conversations" -H "authorization: Bearer $ALICE_TOKEN"
+```
+
+A body field named `plaintext`, `text`, `body`, `message`, or `content` is rejected with 400. `clientId` retries return the original row. `senderDeviceId` is required only when the sender has more than one device. `expireAt` (unix milliseconds) hides the row from later lists.
+
 ## Routes
 
 | Method | Path | Auth | Body → result |
@@ -95,5 +147,9 @@ The start handler also prints `sms stub challenge=… code=000000` to the worker
 | POST | `/devices` | Bearer | `{ name }` → device |
 | PUT | `/devices/:id/prekey-bundle` | Bearer | public bundle only |
 | GET | `/users/:userId/prekey-bundle` | Bearer | public bundles; consumes one OTPK per device |
+| POST | `/conversations` | Bearer | `{ peerUserId }` → 1:1 conversation (idempotent) |
+| GET | `/conversations` | Bearer | conversations the caller belongs to |
+| POST | `/conversations/:id/messages` | Bearer | `{ ciphertext, contentType?, clientId?, senderDeviceId?, expireAt? }` → stored ciphertext |
+| GET | `/conversations/:id/messages` | Bearer | `?cursor=&limit=` oldest-first page; `nextCursor` is a message id |
 
 Sessions live in KV for 30 days. Challenges live for 10 minutes. A phone number can start 8 challenges per 10 minutes.
