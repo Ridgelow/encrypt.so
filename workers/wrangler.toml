@@ -27,6 +27,49 @@ class_name = "ConversationRoom"
 tag = "v1"
 new_sqlite_classes = ["ConversationRoom"]
 
+# Per-user socket count across conversation objects. Not a message inbox.
+[[durable_objects.bindings]]
+name = "USER_GATES"
+class_name = "UserGate"
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["UserGate"]
+
+# Delete expired ciphertext and attachment pointers. Lists also purge the conversation they read.
+[triggers]
+crons = ["*/15 * * * *"]
+
+# Guardrails. Empty blocklists allow everyone. Set a value to 0 to disable that limiter
+# or, for MESSAGE_TTL_MS, to keep rows until their disappearing expire_at.
+# Secrets (EXPO_ACCESS_TOKEN) are not listed here.
+[vars]
+MESSAGE_TTL_MS = "2592000000"
+RATE_AUTH_START_PER_PHONE = "8"
+RATE_AUTH_START_PER_IP = "30"
+RATE_AUTH_START_WINDOW_SEC = "600"
+RATE_AUTH_VERIFY_PER_IP = "40"
+RATE_AUTH_VERIFY_WINDOW_SEC = "600"
+RATE_MESSAGE_PER_USER = "60"
+RATE_MESSAGE_PER_IP = "120"
+RATE_MESSAGE_WINDOW_SEC = "60"
+RATE_PUSH_PER_USER = "10"
+RATE_PUSH_PER_IP = "20"
+RATE_PUSH_WINDOW_SEC = "60"
+RATE_ATTACHMENT_PER_USER = "30"
+RATE_ATTACHMENT_PER_IP = "60"
+RATE_ATTACHMENT_WINDOW_SEC = "60"
+MAX_BODY_BYTES = "65536"
+MAX_CIPHERTEXT_CHARS = "49152"
+MAX_ATTACHMENT_BYTES = "26214400"
+MAX_WS_PER_CONVERSATION = "32"
+MAX_WS_PER_USER = "8"
+MAX_WS_PER_USER_GLOBAL = "16"
+AUTH_FAIL_BACKOFF_BASE_MS = "1000"
+AUTH_FAIL_BACKOFF_MAX_MS = "900000"
+BLOCKLIST_PHONES = ""
+BLOCKLIST_IPS = ""
+
 # Ciphertext blobs only. `wrangler dev` simulates this bucket locally.
 # Create the remote bucket before `wrangler deploy` (see README.md).
 [[r2_buckets]]

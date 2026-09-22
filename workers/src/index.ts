@@ -1,18 +1,40 @@
-import { dispatchAttachment, type AttachmentDeps } from "./attachments";
+import { assertAllowed, clientIp, enforceLimit, sessionsKv } from "./abuse";
+import { dispatchAttachment, type AttachmentDeps, type AttachmentRecord } from "./attachments";
 import { requireUser, startPhone, verifyPhone } from "./auth";
-import { HttpError, empty, json, readJson } from "./http";
+import { loadGuardConfig } from "./guard";
+import { UserGate } from "./gate";
+import { errorResponse, HttpError, empty, json, readJson } from "./http";
 import { createDevice, getMe, getPrekeyBundle, putPrekeyBundle } from "./identity";
 import { createConversation, listConversations, listMessages, postMessage, requireMember } from "./messages";
+import { purgeExpired } from "./purge";
 import { notifyNewMessage, registerPushToken, unregisterPushToken } from "./push";
 import { ConversationRoom } from "./realtime";
 
-export { ConversationRoom };
+export { ConversationRoom, UserGate };
 
 const USER_HEADER = "x-encrypt-user-id";
 const CONVERSATION_HEADER = "x-encrypt-conversation-id";
+const IP_HEADER = "x-encrypt-client-ip";
 
 function attachmentDeps(env: Env): AttachmentDeps {
+  const guard = loadGuardConfig(env);
   return {
+    guard,
+    onLimit: async (request, userId) => {
+      const kv = sessionsKv(env);
+      await enforceLimit(
+        kv,
+        `rl:v1:att:ip:${clientIp(request)}`,
+        guard.attachmentPerIp,
+        guard.attachmentWindowMs,
+      );
+      await enforceLimit(
+        kv,
+        `rl:v1:att:user:${userId}`,
+        guard.attachmentPerUser,
+        guard.attachmentWindowMs,
+      );
+    },
     db: {
       prepare(query: string) {
         const statement = env.DB.prepare(query);
@@ -38,6 +60,35 @@ function attachmentDeps(env: Env): AttachmentDeps {
         if (!object) return null;
         return { arrayBuffer: () => object.arrayBuffer() };
       },
+      async delete(key) {
+        await env.ATTACHMENTS.delete(key);
+      },
+    },
+    records: {
+      async put(row: AttachmentRecord) {
+        await env.DB.prepare(
+          `INSERT INTO attachment_objects (object_key, conversation_id, byte_length, created_at, expire_at)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(object_key) DO UPDATE SET
+             byte_length = excluded.byte_length,
+             expire_at = excluded.expire_at`,
+        )
+          .bind(row.objectKey, row.conversationId, row.byteLength, row.createdAt, row.expireAt)
+          .run();
+      },
+      async get(objectKey) {
+        return env.DB.prepare(
+          "SELECT conversation_id, expire_at FROM attachment_objects WHERE object_key = ?",
+        )
+          .bind(objectKey)
+          .first<{ conversation_id: string; expire_at: number | null }>()
+          .then((row) =>
+            row ? { conversationId: row.conversation_id, expireAt: row.expire_at } : null,
+          );
+      },
+      async delete(objectKey) {
+        await env.DB.prepare("DELETE FROM attachment_objects WHERE object_key = ?").bind(objectKey).run();
+      },
     },
     grants: {
       get: (key) => env.SESSIONS.get(key),
@@ -55,11 +106,13 @@ function pathOf(request: Request): string {
 }
 
 async function route(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  const ip = clientIp(request);
   const attachment = await dispatchAttachment(request, attachmentDeps(env), (req) => requireUser(req, env));
   if (attachment) return attachment;
 
   const path = pathOf(request);
   const method = request.method;
+  const maxBody = loadGuardConfig(env).maxBodyBytes;
 
   if (method === "GET" && path === "/health") {
     return json({ ok: true, service: "encrypt.so" });
@@ -70,11 +123,11 @@ async function route(request: Request, env: Env, ctx: ExecutionContext): Promise
   }
 
   if (method === "POST" && path === "/auth/phone/start") {
-    return json(await startPhone(env, await readJson(request)));
+    return json(await startPhone(env, await readJson(request, maxBody), { ip }));
   }
 
   if (method === "POST" && path === "/auth/phone/verify") {
-    return json(await verifyPhone(env, await readJson(request)));
+    return json(await verifyPhone(env, await readJson(request, maxBody), { ip }));
   }
 
   if (method === "GET" && path === "/me") {
@@ -83,7 +136,7 @@ async function route(request: Request, env: Env, ctx: ExecutionContext): Promise
 
   if (method === "POST" && path === "/devices") {
     const userId = await requireUser(request, env);
-    return json(await createDevice(env, userId, await readJson(request)), 201);
+    return json(await createDevice(env, userId, await readJson(request, maxBody)), 201);
   }
 
   const bundlePut = /^\/devices\/([^/]+)\/prekey-bundle$/.exec(path);
@@ -91,7 +144,7 @@ async function route(request: Request, env: Env, ctx: ExecutionContext): Promise
     const deviceId = bundlePut[1];
     if (!UUID.test(deviceId)) throw new HttpError(404, "device not found");
     const userId = await requireUser(request, env);
-    return json(await putPrekeyBundle(env, userId, deviceId, await readJson(request)));
+    return json(await putPrekeyBundle(env, userId, deviceId, await readJson(request, maxBody)));
   }
 
   const bundleGet = /^\/users\/([^/]+)\/prekey-bundle$/.exec(path);
@@ -104,7 +157,7 @@ async function route(request: Request, env: Env, ctx: ExecutionContext): Promise
 
   if (method === "POST" && path === "/conversations") {
     const userId = await requireUser(request, env);
-    const result = await createConversation(env, userId, await readJson(request));
+    const result = await createConversation(env, userId, await readJson(request, maxBody));
     return json(result.conversation, result.created ? 201 : 200);
   }
 
@@ -119,7 +172,7 @@ async function route(request: Request, env: Env, ctx: ExecutionContext): Promise
     if (!UUID.test(conversationId)) throw new HttpError(404, "conversation not found");
     const userId = await requireUser(request, env);
     if (method === "POST") {
-      const result = await postMessage(env, userId, conversationId, await readJson(request));
+      const result = await postMessage(env, userId, conversationId, await readJson(request, maxBody), { ip });
       if (result.created) {
         ctx.waitUntil(
           notifyNewMessage(env, { conversationId, senderUserId: userId }).catch(() => {
@@ -142,12 +195,12 @@ async function route(request: Request, env: Env, ctx: ExecutionContext): Promise
 
   if (method === "POST" && path === "/push/register") {
     const userId = await requireUser(request, env);
-    return json(await registerPushToken(env, userId, await readJson(request)));
+    return json(await registerPushToken(env, userId, await readJson(request, maxBody), { ip }));
   }
 
   if (method === "POST" && path === "/push/unregister") {
     const userId = await requireUser(request, env);
-    return json(await unregisterPushToken(env, userId, await readJson(request)));
+    return json(await unregisterPushToken(env, userId, await readJson(request, maxBody), { ip }));
   }
 
   throw new HttpError(404, "not found");
@@ -170,6 +223,7 @@ async function realtimeUpgrade(request: Request, env: Env): Promise<Response> {
   headers.delete("authorization");
   headers.set(USER_HEADER, userId);
   headers.set(CONVERSATION_HEADER, conversationId);
+  headers.set(IP_HEADER, clientIp(request));
   const stub = env.CONVERSATIONS.get(env.CONVERSATIONS.idFromName(conversationId));
   return stub.fetch(new Request(request.url, { method: "GET", headers }));
 }
@@ -178,11 +232,21 @@ export default {
   async fetch(request, env, ctx): Promise<Response> {
     if (request.method === "OPTIONS") return empty();
     try {
+      if (pathOf(request) !== "/health") {
+        await assertAllowed(env, { ip: clientIp(request) });
+      }
       return await route(request, env, ctx);
     } catch (err) {
-      if (err instanceof HttpError) return json({ error: err.message }, err.status);
-      console.error(err);
+      if (err instanceof HttpError) return errorResponse(err);
+      console.error(err instanceof Error ? err.name : "internal");
       return json({ error: "internal" }, 500);
     }
+  },
+  async scheduled(_controller, env, ctx): Promise<void> {
+    ctx.waitUntil(
+      purgeExpired(env).catch(() => {
+        console.error("purge failed");
+      }),
+    );
   },
 } satisfies ExportedHandler<Env>;

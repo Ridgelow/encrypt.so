@@ -1,3 +1,5 @@
+import { enforceLimit, sessionsKv } from "./abuse";
+import { loadGuardConfig } from "./guard";
 import { HttpError } from "./http";
 import {
   EXPO_PUSH_TOKEN_RE,
@@ -18,8 +20,15 @@ export async function registerPushToken(
   env: Env,
   userId: string,
   body: unknown,
+  scope?: { ip?: string },
 ): Promise<{ registered: true }> {
   const registration = parsePushRegistration(body);
+  const config = loadGuardConfig(env);
+  const kv = sessionsKv(env);
+  if (scope?.ip) {
+    await enforceLimit(kv, `rl:v1:push:ip:${scope.ip}`, config.pushPerIp, config.pushWindowMs);
+  }
+  await enforceLimit(kv, `rl:v1:push:user:${userId}`, config.pushPerUser, config.pushWindowMs);
   if (registration.deviceId) {
     const owned = await env.DB.prepare("SELECT id FROM devices WHERE id = ? AND user_id = ?")
       .bind(registration.deviceId, userId)
@@ -61,8 +70,15 @@ export async function unregisterPushToken(
   env: Env,
   userId: string,
   body: unknown,
+  scope?: { ip?: string },
 ): Promise<{ unregistered: true }> {
   const expoPushToken = parsePushUnregister(body);
+  const config = loadGuardConfig(env);
+  const kv = sessionsKv(env);
+  if (scope?.ip) {
+    await enforceLimit(kv, `rl:v1:push:ip:${scope.ip}`, config.pushPerIp, config.pushWindowMs);
+  }
+  await enforceLimit(kv, `rl:v1:push:user:${userId}`, config.pushPerUser, config.pushWindowMs);
   await env.DB.prepare("DELETE FROM push_tokens WHERE expo_push_token = ? AND user_id = ?")
     .bind(expoPushToken, userId)
     .run();

@@ -1,4 +1,5 @@
-import { HttpError, isRecord } from "./http";
+import { admitRoom, loadGuardConfig } from "./guard";
+import { errorResponse, HttpError, isRecord } from "./http";
 import { postMessage, requireMember } from "./messages";
 import { notifyNewMessage } from "./push";
 
@@ -13,7 +14,7 @@ import { notifyNewMessage } from "./push";
  */
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const CIPHERTEXT_RE = /^[A-Za-z0-9+/_-]{4,49152}={0,2}$/;
+const CIPHERTEXT_RE = /^[A-Za-z0-9+/_-]{4,}={0,2}$/;
 const CONTENT_TYPE_RE = /^[\w!#$&^_.+-]{1,64}(?:\/[\w!#$&^_.+-]{1,64})?$/;
 const CLIENT_ID_RE = /^[\w.-]{1,64}$/;
 const PLAINTEXT_FIELD = /^(plaintext|plain_text|text|body|message|content)$/i;
@@ -22,10 +23,13 @@ const MAX_FRAME_CHARS = 96 * 1024;
 
 const USER_HEADER = "x-encrypt-user-id";
 const CONVERSATION_HEADER = "x-encrypt-conversation-id";
+const IP_HEADER = "x-encrypt-client-ip";
 
 type SocketState = {
   userId: string;
   subscribed: boolean;
+  ip: string;
+  released?: boolean;
 };
 
 export type ClientFrame =
@@ -76,7 +80,7 @@ function parseExpireAt(value: unknown): number | null | string {
 }
 
 /** Parse one client frame. Plaintext and private-key field names are refused. */
-export function parseClientFrame(raw: string): ParseResult {
+export function parseClientFrame(raw: string, maxCiphertextChars = 49152): ParseResult {
   if (raw.length > MAX_FRAME_CHARS) return { ok: false, error: "frame too large", clientId: null };
   let body: unknown;
   try {
@@ -100,7 +104,13 @@ export function parseClientFrame(raw: string): ParseResult {
   if (typeof body.conversationId !== "string" || !UUID.test(body.conversationId)) {
     return { ok: false, error: "invalid conversationId", clientId };
   }
-  if (typeof body.ciphertext !== "string" || !CIPHERTEXT_RE.test(body.ciphertext)) {
+  if (typeof body.ciphertext !== "string" || body.ciphertext.length < 4) {
+    return { ok: false, error: "invalid ciphertext", clientId };
+  }
+  if (body.ciphertext.length > maxCiphertextChars) {
+    return { ok: false, error: "envelope too large", clientId };
+  }
+  if (!CIPHERTEXT_RE.test(body.ciphertext)) {
     return { ok: false, error: "invalid ciphertext", clientId };
   }
   let contentType = DEFAULT_CONTENT_TYPE;
@@ -146,6 +156,7 @@ function sendJson(ws: WebSocket, body: unknown): void {
 function stateOf(ws: WebSocket): SocketState | null {
   const value = ws.deserializeAttachment() as SocketState | null;
   if (!value || typeof value.userId !== "string") return null;
+  if (typeof value.ip !== "string") value.ip = "unknown";
   return value;
 }
 
@@ -171,18 +182,37 @@ export class ConversationRoom implements DurableObject {
     }
     if (!stored) await this.ctx.storage.put("conversationId", conversationId);
 
+    const limits = loadGuardConfig(this.env);
+    const admission = admitRoom({
+      roomTotal: this.ctx.getWebSockets().length,
+      roomForUser: this.ctx.getWebSockets(userId).length,
+      maxPerConversation: limits.maxWsPerConversation,
+      maxPerUserInRoom: limits.maxWsPerUser,
+    });
+    if (!admission.ok) {
+      return errorResponse(new HttpError(429, "too many connections", { retryAfter: admission.retryAfterSeconds }));
+    }
+    const reserved = await this.reserveUser(userId);
+    if (reserved) return reserved;
+
+    const ip = request.headers.get(IP_HEADER) ?? "unknown";
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
-    this.ctx.acceptWebSocket(server);
-    server.serializeAttachment({ userId, subscribed: false } satisfies SocketState);
+    try {
+      this.ctx.acceptWebSocket(server, [userId]);
+      server.serializeAttachment({ userId, subscribed: false, ip, released: false } satisfies SocketState);
+    } catch (err) {
+      await this.releaseUser(userId);
+      throw err;
+    }
     sendJson(server, { type: "ready", userId });
     return new Response(null, { status: 101, webSocket: client });
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     const raw = typeof message === "string" ? message : new TextDecoder().decode(message);
-    const parsed = parseClientFrame(raw);
+    const parsed = parseClientFrame(raw, loadGuardConfig(this.env).maxCiphertextChars);
     if (!parsed.ok) {
       sendJson(ws, { type: "error", error: parsed.error, clientId: parsed.clientId });
       return;
@@ -213,7 +243,7 @@ export class ConversationRoom implements DurableObject {
     }
 
     if (parsed.frame.type === "subscribe") {
-      const next: SocketState = { userId: state.userId, subscribed: true };
+      const next: SocketState = { userId: state.userId, subscribed: true, ip: state.ip };
       ws.serializeAttachment(next);
       sendJson(ws, { type: "subscribed", conversationId });
       return;
@@ -224,7 +254,14 @@ export class ConversationRoom implements DurableObject {
       return;
     }
 
-    const persisted = await this.persist(state.userId, parsed.frame);
+    let persisted: { id: string; createdAt: number; senderDeviceId: string } | null;
+    try {
+      persisted = await this.persist(state.userId, state.ip, parsed.frame);
+    } catch (err) {
+      const error = err instanceof HttpError ? err.message : "persist failed";
+      sendJson(ws, { type: "error", error, clientId: parsed.frame.clientId });
+      return;
+    }
     const outbound = {
       type: "message",
       conversationId,
@@ -251,9 +288,36 @@ export class ConversationRoom implements DurableObject {
     });
   }
 
-  async webSocketClose(_ws: WebSocket, _code: number, _reason: string, _wasClean: boolean): Promise<void> {}
+  async webSocketClose(ws: WebSocket, _code: number, _reason: string, _wasClean: boolean): Promise<void> {
+    await this.drop(ws);
+  }
 
-  async webSocketError(_ws: WebSocket, _error: unknown): Promise<void> {}
+  async webSocketError(ws: WebSocket, _error: unknown): Promise<void> {
+    await this.drop(ws);
+  }
+
+  private async reserveUser(userId: string): Promise<Response | null> {
+    const gate = this.env.USER_GATES.get(this.env.USER_GATES.idFromName(userId));
+    const response = await gate.fetch("https://user-gate/reserve", { method: "POST" });
+    if (response.status === 204) return null;
+    return response;
+  }
+
+  private async releaseUser(userId: string): Promise<void> {
+    const gate = this.env.USER_GATES.get(this.env.USER_GATES.idFromName(userId));
+    await gate.fetch("https://user-gate/release", { method: "POST" });
+  }
+
+  private async drop(ws: WebSocket): Promise<void> {
+    const state = stateOf(ws);
+    if (!state || state.released) return;
+    ws.serializeAttachment({ ...state, released: true });
+    try {
+      await this.releaseUser(state.userId);
+    } catch {
+      console.error("connection release failed");
+    }
+  }
 
   /**
    * Best-effort D1 write through the existing ciphertext route.
@@ -261,6 +325,7 @@ export class ConversationRoom implements DurableObject {
    */
   private async persist(
     userId: string,
+    ip: string,
     frame: Extract<ClientFrame, { type: "message" }>,
   ): Promise<{ id: string; createdAt: number; senderDeviceId: string } | null> {
     const body: Record<string, unknown> = {
@@ -271,7 +336,7 @@ export class ConversationRoom implements DurableObject {
     if (frame.senderDeviceId) body.senderDeviceId = frame.senderDeviceId;
     if (frame.expireAt != null) body.expireAt = frame.expireAt;
     try {
-      const result = await postMessage(this.env, userId, frame.conversationId, body);
+      const result = await postMessage(this.env, userId, frame.conversationId, body, { ip });
       if (result.created) {
         const conversationId = frame.conversationId;
         this.ctx.waitUntil(
@@ -286,6 +351,7 @@ export class ConversationRoom implements DurableObject {
         senderDeviceId: result.message.senderDeviceId,
       };
     } catch (err) {
+      if (err instanceof HttpError && (err.status === 429 || err.status === 413)) throw err;
       const message = err instanceof Error ? err.message : "persist failed";
       console.warn(`realtime persist skipped: ${message}`);
       return null;

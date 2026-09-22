@@ -14,9 +14,15 @@ export async function stageEncryptedAttachment(input: {
   bytes: Uint8Array;
   mime?: string;
   name?: string;
+  /** Disappearing-message deadline. Omitted when the timer is off. */
+  expireAt?: number | null;
   encrypt: (plaintext: string) => Promise<OpaqueEnvelope>;
 }): Promise<{ envelope: OpaqueEnvelope; label: string; objectKey: string }> {
-  const grant = await input.client.createAttachmentUpload(input.token, input.conversationId);
+  const grant = await input.client.createAttachmentUpload(
+    input.token,
+    input.conversationId,
+    typeof input.expireAt === "number" ? input.expireAt : undefined,
+  );
   const sealed = await sealAttachment({
     bytes: input.bytes,
     mime: input.mime,
