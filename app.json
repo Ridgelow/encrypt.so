@@ -1,0 +1,44 @@
+{
+  "expo": {
+    "name": "encrypt_",
+    "slug": "encrypt-so",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "scheme": "encryptso",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#000000"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "so.encrypt.app"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#000000",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "package": "so.encrypt.app",
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-font",
+      "expo-secure-store",
+      "expo-splash-screen"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}

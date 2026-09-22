@@ -1,0 +1,8 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* NativeWind web: class-based dark mode (avoids media-mode crash) */
+:root {
+  --css-interop-darkMode: class dark;
+}
