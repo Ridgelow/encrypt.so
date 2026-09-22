@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "workers:typecheck": "npm --prefix workers run typecheck",
+    "workers:test": "npm --prefix workers test",
     "build:development": "npx eas-cli build --profile development",
     "build:preview": "npx eas-cli build --profile preview",
     "build:production": "npx eas-cli build --profile production"

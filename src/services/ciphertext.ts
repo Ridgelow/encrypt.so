@@ -1,6 +1,7 @@
 import { base64ToBytes, bytesToBase64 } from "@open-e2ee/signal-protocol-sdk/encoding";
 import type { OpaqueEnvelope } from "@/e2ee/session";
 import type { CiphertextMessage, MessagingClient, PostMessageInput } from "@/services/api";
+import { decodeOpaqueEnvelope } from "@/services/realtime";
 
 /** Opaque envelope bytes. The worker stores this string and does not decode it. */
 export const ENVELOPE_CONTENT_TYPE = "application/vnd.encrypt.envelope";
@@ -32,6 +33,18 @@ export function envelopeToCiphertext(envelope: OpaqueEnvelope): string {
     ciphertext: envelope.ciphertext,
   });
   return bytesToBase64(new TextEncoder().encode(json));
+}
+
+/**
+ * Read an opaque envelope stored either as the Signal SDK base64 JSON
+ * (`envelopeToCiphertext`) or the realtime frame encoding.
+ */
+export function readOpaqueCiphertext(ciphertext: string): OpaqueEnvelope | null {
+  try {
+    return ciphertextToEnvelope(ciphertext);
+  } catch {
+    return decodeOpaqueEnvelope(ciphertext);
+  }
 }
 
 export function ciphertextToEnvelope(ciphertext: string): OpaqueEnvelope {

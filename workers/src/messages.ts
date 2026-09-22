@@ -208,7 +208,8 @@ export async function listConversations(env: Env, userId: string): Promise<Conve
   }));
 }
 
-async function requireMember(env: Env, conversationId: string, userId: string): Promise<void> {
+/** Membership check shared with realtime upgrades. Non-members get the same 404 as the message routes. */
+export async function requireMember(env: Env, conversationId: string, userId: string): Promise<void> {
   const row = await env.DB.prepare(
     "SELECT 1 AS ok FROM memberships WHERE conversation_id = ? AND user_id = ?",
   )

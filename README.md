@@ -61,10 +61,10 @@ Key generation and `expo-crypto` / `expo-secure-store` are included in Expo Go. 
 
 `ensureSessionWithUser`, `encryptForPeer`, and `decryptFromPeer` (`src/e2ee`) turn plaintext into an opaque base64 envelope and back. Establishing a session calls `GET /users/:userId/prekey-bundle`, picks one device, and runs the SDK's X3DH initiator path. The worker still does not publish the ML-KEM prekey, so that fetch uses the SDK's classical compatibility path. A bundle that includes KEM material takes PQXDH. The first incoming prekey message establishes the responder session from the keys already in Secure Store. Session records stay on device.
 
-The conversation screen encrypts a send when the route id is a real user id, and decrypts a sealed incoming envelope when one is present. Mock chats (Sam, groups) stay local if there is no session. WebSockets, Durable Objects, and attachments are still out of scope — nothing here puts plaintext on an API.
+The conversation screen encrypts a send when the route id is a real user id, and decrypts a sealed incoming envelope when one is present. Mock chats (Sam, groups) stay local if there is no session. With `EXPO_PUBLIC_API_URL` and a session, a real 1:1 thread opens a WebSocket on that origin, sends the opaque envelope, and posts the same ciphertext through `createMessagingClient`. A disappearing-message timer sets `expireAt` on that post and on the socket frame. Incoming envelopes are decrypted on device and kept in the Secure Store message cache. Attachments and push are still out of scope — nothing here puts plaintext on an API.
 
 ## Notes
 
-- Mock chats stay on the device. A conversation opened with a real user id encrypts locally via the on-device session. The worker persists conversation membership and opaque message ciphertext; see the curl smoke in `workers/README.md`. Durable Objects, R2, and push are not in this tree yet.
+- Mock chats stay on the device. A conversation opened with a real user id encrypts locally and, when the API and a session are present, delivers the opaque envelope over a conversation Durable Object. The worker persists ciphertext through the existing message routes, including `expireAt` when disappearing messages are on. R2 and push are not in this tree yet.
 - Wordmark face **Hacked** by David Libeau (CC-BY) — credit required wherever this ships.
 - See `PROJECT.md` for stack and brand decisions.

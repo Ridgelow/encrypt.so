@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Pressable, ScrollView, Text, View, StyleSheet } from "react-native";
+import { Pressable, ScrollView, Text, StyleSheet } from "react-native";
 import { router, useLocalSearchParams } from "expo-router";
 import { ChatComposer, MessageBubble } from "@/components/chat/MessageBubble";
 import { AttachmentSheet, DisappearingTimerSheet } from "@/components/chat/Sheets";
@@ -14,8 +14,8 @@ import {
   isPeerUserId,
   type OpaqueEnvelope,
 } from "@/e2ee";
-import { configuredApiOrigin, createMessagingClient, type CiphertextMessage } from "@/services/api";
-import { ciphertextToEnvelope, sendDisappearingCiphertext } from "@/services/ciphertext";
+import { configuredApiOrigin, createMessagingClient, isApiConfigured, type CiphertextMessage } from "@/services/api";
+import { readOpaqueCiphertext, sendDisappearingCiphertext } from "@/services/ciphertext";
 import {
   expireAtForChoice,
   isExpired,
@@ -24,6 +24,7 @@ import {
   saveTimerChoice,
   systemLineForTimer,
 } from "@/services/disappear";
+import { liveChatEnabled, openLiveChat, type LiveChat, type LiveThreadMessage } from "@/services/liveChat";
 import { openSecureMessageCache } from "@/services/messageCache";
 import { loadSession } from "@/services/session";
 import { colors } from "@/theme/tokens";
@@ -47,6 +48,19 @@ function clientId(): string {
   return `local-${Date.now()}`;
 }
 
+function toThread(item: LiveThreadMessage): ThreadItem {
+  return {
+    id: item.id,
+    kind: "text",
+    from: item.from,
+    text: item.text,
+    time: clock(item.createdAt),
+    receipts: item.from === "me" ? "✓✓" : undefined,
+    envelope: item.envelope,
+    ...(item.expireAt != null ? { expireAt: item.expireAt } : {}),
+  };
+}
+
 function openingThread(isGroup: boolean, peerUserId: string | null): ThreadItem[] {
   if (isGroup) return groupThread;
   if (peerUserId) {
@@ -56,11 +70,19 @@ function openingThread(isGroup: boolean, peerUserId: string | null): ThreadItem[
 }
 
 function tryEnvelope(ciphertext: string): OpaqueEnvelope | null {
-  try {
-    return ciphertextToEnvelope(ciphertext);
-  } catch {
-    return null;
-  }
+  return readOpaqueCiphertext(ciphertext);
+}
+
+function mergeHttpHistory(current: ThreadItem[], incoming: ThreadItem[]): ThreadItem[] {
+  const banner: ThreadItem = current.find((message) => message.id === "e2ee") ?? {
+    id: "e2ee",
+    kind: "system",
+    text: "Messages are end-to-end encrypted",
+  };
+  const notes = current.filter((message) => message.kind === "system" && message.id !== "e2ee");
+  const incomingIds = new Set(incoming.map((message) => message.id));
+  const pending = current.filter((message) => message.kind === "text" && !incomingIds.has(message.id));
+  return [banner, ...notes, ...incoming, ...pending];
 }
 
 async function rememberPlaintext(input: {
@@ -77,8 +99,48 @@ async function rememberPlaintext(input: {
     conversationId: input.conversationId,
     plaintext: input.plaintext,
     createdAt: input.createdAt,
+    from: "me",
     ...(input.expireAt != null ? { expireAt: input.expireAt } : {}),
   });
+}
+
+async function loadHttpThread(input: {
+  origin: string;
+  token: string;
+  localUserId: string;
+  peerUserId: string;
+}): Promise<{ conversationId: string; items: ThreadItem[] }> {
+  const client = createMessagingClient({ baseUrl: input.origin });
+  const conversation = await client.createConversation(input.token, input.peerUserId);
+  const page = await client.listMessages(input.token, conversation.id, { limit: 50 });
+  const cache = await openSecureMessageCache();
+  await cache?.purgeExpired();
+  const cached = new Map((await cache?.list(conversation.id) ?? []).map((item) => [item.id, item]));
+  const incoming: ThreadItem[] = [];
+  for (const row of page.messages) {
+    const cachedPlaintext =
+      (row.clientId ? cached.get(row.clientId)?.plaintext : undefined) ?? cached.get(row.id)?.plaintext;
+    const item = await rowToThread(row, input.localUserId, cachedPlaintext);
+    if (!item) {
+      await cache?.remove(row.id);
+      if (row.clientId) await cache?.remove(row.clientId);
+      continue;
+    }
+    if (item.from === "them" && item.text !== "Message unavailable") {
+      await cache?.save({
+        id: row.id,
+        conversationId: conversation.id,
+        plaintext: item.text,
+        createdAt: row.createdAt,
+        senderDeviceId: row.senderDeviceId,
+        contentType: row.contentType,
+        from: "them",
+        ...(row.expireAt != null ? { expireAt: row.expireAt } : {}),
+      });
+    }
+    incoming.push(item);
+  }
+  return { conversationId: conversation.id, items: incoming };
 }
 
 export default function ConversationScreen() {
@@ -93,6 +155,7 @@ export default function ConversationScreen() {
   const chat = chats.find((item) => item.id === id);
 
   const [messages, setMessages] = useState<ThreadItem[]>(() => openingThread(isGroup, peerUserId));
+  const liveRef = useRef<Promise<LiveChat | null>>(Promise.resolve(null));
   const [draft, setDraft] = useState("");
   const [attachOpen, setAttachOpen] = useState(false);
   const [timerOpen, setTimerOpen] = useState(false);
@@ -119,6 +182,76 @@ export default function ConversationScreen() {
       cancelled = true;
     };
   }, [id, peerUserId]);
+
+  useEffect(() => {
+    if (!liveChatEnabled({ peerUserId, isGroup, apiConfigured: isApiConfigured(), hasSession: true })) {
+      liveRef.current = Promise.resolve(null);
+      return;
+    }
+    const peer = peerUserId;
+    if (!peer) return;
+    let cancelled = false;
+    const pending = (async (): Promise<LiveChat | null> => {
+      const session = await loadSession();
+      const origin = configuredApiOrigin();
+      if (!session || !origin || cancelled) return null;
+      try {
+        const chat = await openLiveChat({
+          httpBase: origin,
+          sessionToken: session.sessionToken,
+          localUserId: session.userId,
+          peerUserId: peer,
+          messaging: createMessagingClient({ baseUrl: origin }),
+          decrypt: decryptFromPeer,
+          onMessage(item) {
+            if (isExpired(item.expireAt)) return;
+            setMessages((current) =>
+              current.some((message) => message.id === item.id) ? current : [...current, toThread(item)],
+            );
+          },
+        });
+        if (cancelled) {
+          chat.close();
+          return null;
+        }
+        conversationIdRef.current = chat.conversationId;
+        setMessages((current) => {
+          const opening = current.filter((message) => message.kind === "system");
+          const live = chat.history.filter((item) => !isExpired(item.expireAt)).map(toThread);
+          const seen = new Set(live.map((message) => message.id));
+          const kept = current.filter((message) => message.kind !== "system" && !seen.has(message.id));
+          return [...(opening.length ? opening : openingThread(isGroup, peer)), ...live, ...kept];
+        });
+        return chat;
+      } catch (err) {
+        console.warn("[realtime] staying on this device", err instanceof Error ? err.message : "");
+        try {
+          const loaded = await loadHttpThread({
+            origin,
+            token: session.sessionToken,
+            localUserId: session.userId,
+            peerUserId: peer,
+          });
+          if (cancelled) return null;
+          conversationIdRef.current = loaded.conversationId;
+          setMessages((current) => mergeHttpHistory(current, loaded.items));
+        } catch {
+          console.warn("[encrypt] ciphertext history stayed on the server");
+        }
+        return null;
+      }
+    })();
+    const settled = pending.catch((err) => {
+      console.warn("[realtime] staying on this device", err instanceof Error ? err.message : "");
+      return null;
+    });
+    liveRef.current = settled;
+    return () => {
+      cancelled = true;
+      void settled.then((chat) => chat?.close());
+      if (liveRef.current === settled) liveRef.current = Promise.resolve(null);
+    };
+  }, [isGroup, peerUserId]);
 
   const sealedKey = messages
     .filter((message) => message.kind === "text" && message.sealed && message.envelope)
@@ -160,60 +293,6 @@ export default function ConversationScreen() {
       cancelled = true;
     };
   }, [sealedKey, id]);
-
-  useEffect(() => {
-    if (!peerUserId || isGroup) return;
-    let cancelled = false;
-    void (async () => {
-      const origin = configuredApiOrigin();
-      const session = await loadSession();
-      if (!origin || !session || cancelled) return;
-      try {
-        const client = createMessagingClient({ baseUrl: origin });
-        const conversation = await client.createConversation(session.sessionToken, peerUserId);
-        conversationIdRef.current = conversation.id;
-        const page = await client.listMessages(session.sessionToken, conversation.id, { limit: 50 });
-        const cache = await openSecureMessageCache();
-        await cache?.purgeExpired();
-        const cached = new Map((await cache?.list(conversation.id) ?? []).map((item) => [item.id, item]));
-        const incoming: ThreadItem[] = [];
-        for (const row of page.messages) {
-          const item = await rowToThread(row, session.userId, cached.get(row.id)?.plaintext);
-          if (!item) {
-            await cache?.remove(row.id);
-            continue;
-          }
-          if (item.from === "them" && item.text !== "Message unavailable") {
-            await cache?.save({
-              id: row.id,
-              conversationId: conversation.id,
-              plaintext: item.text,
-              createdAt: row.createdAt,
-              senderDeviceId: row.senderDeviceId,
-              contentType: row.contentType,
-              ...(row.expireAt != null ? { expireAt: row.expireAt } : {}),
-            });
-          }
-          incoming.push(item);
-        }
-        if (cancelled) return;
-        setMessages((current) => {
-          const banner =
-            current.find((message) => message.id === "e2ee") ??
-            ({ id: "e2ee", kind: "system", text: "Messages are end-to-end encrypted" } as const);
-          const notes = current.filter((message) => message.kind === "system" && message.id !== "e2ee");
-          const incomingIds = new Set(incoming.map((message) => message.id));
-          const pending = current.filter((message) => message.kind === "text" && !incomingIds.has(message.id));
-          return [banner, ...notes, ...incoming, ...pending];
-        });
-      } catch {
-        console.warn("[encrypt] ciphertext history stayed on the server");
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [peerUserId, isGroup]);
 
   const purgeIds = useCallback((ids: string[]) => {
     if (ids.length === 0) return;
@@ -289,6 +368,16 @@ export default function ConversationScreen() {
       try {
         await ensureSessionWithUser(peerUserId);
         const envelope = await encryptForPeer(peerUserId, text);
+        const live = await liveRef.current;
+        if (live) {
+          const published = await live.publish(envelope, text, { expireAt, createdAt });
+          setMessages((current) =>
+            current.map((item) =>
+              item.id === localId ? { ...item, id: published.id, envelope, receipts: "✓✓" } : item,
+            ),
+          );
+          return;
+        }
         const origin = configuredApiOrigin();
         const session = await loadSession();
         let messageId = localId;

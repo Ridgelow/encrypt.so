@@ -1,7 +1,13 @@
 import { requireUser, startPhone, verifyPhone } from "./auth";
 import { HttpError, empty, json, readJson } from "./http";
 import { createDevice, getMe, getPrekeyBundle, putPrekeyBundle } from "./identity";
-import { createConversation, listConversations, listMessages, postMessage } from "./messages";
+import { createConversation, listConversations, listMessages, postMessage, requireMember } from "./messages";
+import { ConversationRoom } from "./realtime";
+
+export { ConversationRoom };
+
+const USER_HEADER = "x-encrypt-user-id";
+const CONVERSATION_HEADER = "x-encrypt-conversation-id";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -16,6 +22,10 @@ async function route(request: Request, env: Env): Promise<Response> {
 
   if (method === "GET" && path === "/health") {
     return json({ ok: true, service: "encrypt.so" });
+  }
+
+  if (path === "/realtime") {
+    return realtimeUpgrade(request, env);
   }
 
   if (method === "POST" && path === "/auth/phone/start") {
@@ -83,6 +93,27 @@ async function route(request: Request, env: Env): Promise<Response> {
   }
 
   throw new HttpError(404, "not found");
+}
+
+/**
+ * Authenticated WebSocket upgrade into the conversation Durable Object.
+ * The session token is the same KV bearer token as `/me`. The token is not forwarded.
+ */
+async function realtimeUpgrade(request: Request, env: Env): Promise<Response> {
+  const userId = await requireUser(request, env);
+  const conversationId = new URL(request.url).searchParams.get("conversationId") ?? "";
+  if (!UUID.test(conversationId)) throw new HttpError(400, "invalid conversationId");
+  await requireMember(env, conversationId, userId);
+  if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
+    throw new HttpError(426, "expected websocket");
+  }
+
+  const headers = new Headers(request.headers);
+  headers.delete("authorization");
+  headers.set(USER_HEADER, userId);
+  headers.set(CONVERSATION_HEADER, conversationId);
+  const stub = env.CONVERSATIONS.get(env.CONVERSATIONS.idFromName(conversationId));
+  return stub.fetch(new Request(request.url, { method: "GET", headers }));
 }
 
 export default {

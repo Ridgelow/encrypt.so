@@ -19,6 +19,8 @@ export type CachedMessage = {
   senderDeviceId?: string;
   /** Unix milliseconds. Absent when the message does not disappear. */
   expireAt?: number;
+  /** Local display direction. Never sent to the worker. */
+  from?: "me" | "them";
 };
 
 export type MessageCache = {
@@ -37,12 +39,14 @@ type CacheFile = { messages: CachedMessage[] };
 function isCachedMessage(value: unknown): value is CachedMessage {
   if (typeof value !== "object" || value === null) return false;
   const message = value as CachedMessage;
+  const fromOk = message.from === undefined || message.from === "me" || message.from === "them";
   return (
     typeof message.id === "string" &&
     typeof message.conversationId === "string" &&
     typeof message.plaintext === "string" &&
     typeof message.createdAt === "number" &&
-    (message.expireAt === undefined || typeof message.expireAt === "number")
+    (message.expireAt === undefined || typeof message.expireAt === "number") &&
+    fromOk
   );
 }
 
@@ -87,6 +91,7 @@ export function createMessageCache(store: KeyValueStore, limit = MESSAGE_CACHE_L
         ...(message.contentType ? { contentType: message.contentType } : {}),
         ...(message.senderDeviceId ? { senderDeviceId: message.senderDeviceId } : {}),
         ...(typeof message.expireAt === "number" ? { expireAt: message.expireAt } : {}),
+        ...(message.from === "me" || message.from === "them" ? { from: message.from } : {}),
       };
       const existing = (await readAll(store)).filter((item) => item.id !== message.id);
       const next = [...existing, stored].sort(byTime);
