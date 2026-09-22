@@ -20,7 +20,18 @@ export type Contact = {
 
 export type Message =
   | { id: string; kind: "system"; text: string }
-  | { id: string; kind: "text"; from: "me" | "them"; text: string; time?: string; receipts?: string; sender?: string; senderInitials?: string }
+  | {
+      id: string;
+      kind: "text";
+      from: "me" | "them";
+      text: string;
+      time?: string;
+      receipts?: string;
+      sender?: string;
+      senderInitials?: string;
+      /** Unix milliseconds. The bubble is removed locally when this time passes. */
+      expireAt?: number | null;
+    }
   | { id: string; kind: "image"; from: "me" | "them"; time?: string; receipts?: string }
   | { id: string; kind: "file"; from: "me" | "them"; name: string; size: string; time?: string };
 
@@ -170,5 +181,3 @@ export const safetyDigits = [
   "66120",
   "39485",
 ];
-
-export const timerOptions = ["Off", "30 seconds", "5 minutes", "1 hour", "1 day", "1 week"] as const;

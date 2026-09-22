@@ -66,10 +66,11 @@ export function MessageBubble({ message }: { message: Message }) {
   const bubble = (
     <View style={[styles.bubble, mine ? styles.bubbleMine : styles.bubbleThem]}>
       <Text style={[styles.text, mine && styles.textMine]}>{message.text}</Text>
-      {message.time ? (
+      {message.time || message.expireAt ? (
         <Text style={[typography.mono, styles.meta, mine && styles.metaMine]}>
-          {message.time}
+          {message.time ?? ""}
           {message.receipts ? ` ${message.receipts}` : ""}
+          {message.expireAt ? " ttl" : ""}
         </Text>
       ) : null}
     </View>

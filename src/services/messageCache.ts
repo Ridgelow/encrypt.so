@@ -17,6 +17,8 @@ export type CachedMessage = {
   createdAt: number;
   contentType?: string;
   senderDeviceId?: string;
+  /** Unix milliseconds. Absent when the message does not disappear. */
+  expireAt?: number;
 };
 
 export type MessageCache = {
@@ -25,6 +27,8 @@ export type MessageCache = {
   /** Oldest first. Omit `conversationId` to read every cached conversation. */
   list(conversationId?: string): Promise<CachedMessage[]>;
   remove(id: string): Promise<void>;
+  /** Drop messages whose `expireAt` is at or before `now`. Returns the removed ids. */
+  purgeExpired(now?: number): Promise<string[]>;
   clear(): Promise<void>;
 };
 
@@ -37,7 +41,8 @@ function isCachedMessage(value: unknown): value is CachedMessage {
     typeof message.id === "string" &&
     typeof message.conversationId === "string" &&
     typeof message.plaintext === "string" &&
-    typeof message.createdAt === "number"
+    typeof message.createdAt === "number" &&
+    (message.expireAt === undefined || typeof message.expireAt === "number")
   );
 }
 
@@ -74,8 +79,17 @@ export function createMessageCache(store: KeyValueStore, limit = MESSAGE_CACHE_L
   return {
     async save(message) {
       assertMessage(message);
+      const stored: CachedMessage = {
+        id: message.id,
+        conversationId: message.conversationId,
+        plaintext: message.plaintext,
+        createdAt: message.createdAt,
+        ...(message.contentType ? { contentType: message.contentType } : {}),
+        ...(message.senderDeviceId ? { senderDeviceId: message.senderDeviceId } : {}),
+        ...(typeof message.expireAt === "number" ? { expireAt: message.expireAt } : {}),
+      };
       const existing = (await readAll(store)).filter((item) => item.id !== message.id);
-      const next = [...existing, message].sort(byTime);
+      const next = [...existing, stored].sort(byTime);
       const trimmed = next.slice(Math.max(0, next.length - limit));
       await store.setItem(MESSAGE_CACHE_KEY, JSON.stringify({ messages: trimmed }));
     },
@@ -91,6 +105,19 @@ export function createMessageCache(store: KeyValueStore, limit = MESSAGE_CACHE_L
         return;
       }
       await store.setItem(MESSAGE_CACHE_KEY, JSON.stringify({ messages: next }));
+    },
+    async purgeExpired(now = Date.now()) {
+      const all = await readAll(store);
+      const expired = all.filter((item) => typeof item.expireAt === "number" && item.expireAt <= now);
+      if (expired.length === 0) return [];
+      const drop = new Set(expired.map((item) => item.id));
+      const next = all.filter((item) => !drop.has(item.id));
+      if (next.length === 0) {
+        await store.deleteItem(MESSAGE_CACHE_KEY);
+      } else {
+        await store.setItem(MESSAGE_CACHE_KEY, JSON.stringify({ messages: next }));
+      }
+      return expired.map((item) => item.id);
     },
     async clear() {
       await store.deleteItem(MESSAGE_CACHE_KEY);
