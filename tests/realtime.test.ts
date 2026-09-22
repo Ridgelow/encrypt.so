@@ -396,12 +396,15 @@ describe("realtime client", () => {
 
   it("does not cache a content key when the attachment label is a descriptor", async () => {
     const cache = createMessageCache(memoryStore());
-    const { chat } = await startChat({ cache });
+    const { chat, socket } = await startChat({ cache });
+    socket.open();
+    socket.receive({ type: "subscribed", conversationId: CONVO });
     await chat.publish(envelope, '{"v":1,"key":"secret-content-key"}', { contentType: "attachment/v1" });
     const cached = await cache.list(CONVO);
     expect(cached[0]?.plaintext).toBe("Encrypted attachment");
     expect(cached[0]?.plaintext).not.toContain("secret-content-key");
     expect(cached[0]?.contentType).toBe("attachment/v1");
+    expect(JSON.stringify(socket.sent)).not.toContain("secret-content-key");
   });
 
   it("does not decrypt or cache an inbound attachment envelope", async () => {

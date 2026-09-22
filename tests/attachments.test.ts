@@ -420,11 +420,11 @@ describe("encrypted attachments", () => {
   });
 
   it("mounts attachment dispatch on the worker", () => {
-    const source = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "../workers/src/index.ts"), "utf8");
+    const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "../workers");
+    const source = readFileSync(path.join(root, "src/index.ts"), "utf8");
+    const wrangler = readFileSync(path.join(root, "wrangler.toml"), "utf8");
     expect(source).toContain("dispatchAttachment");
-    expect(source).toContain('binding = "ATTACHMENTS"') || expect(readFileSync(
-      path.join(path.dirname(fileURLToPath(import.meta.url)), "../workers/wrangler.toml"),
-      "utf8",
-    )).toContain('binding = "ATTACHMENTS"');
+    expect(source).toContain("env.ATTACHMENTS");
+    expect(wrangler).toContain('binding = "ATTACHMENTS"');
   });
 });
