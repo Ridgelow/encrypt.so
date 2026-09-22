@@ -7,7 +7,8 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "workers:typecheck": "npm --prefix workers run typecheck"
   },
   "dependencies": {
     "@expo-google-fonts/barlow": "^0.4.1",
