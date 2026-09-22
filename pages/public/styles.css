@@ -209,7 +209,7 @@ a {
 
 .section {
   padding: 56px 0;
-  scroll-margin-top: 80px;
+  scroll-margin-top: 120px;
 }
 
 .rule-top {
@@ -640,6 +640,19 @@ h3 {
 @media (max-width: 719px) {
   .pill {
     display: none;
+  }
+
+  .bar {
+    align-items: flex-start;
+    gap: 10px 16px;
+    padding: 12px 0;
+  }
+
+  .nav {
+    flex: 1 0 100%;
+    margin-right: 0;
+    justify-content: space-between;
+    gap: 8px;
   }
 }
 
