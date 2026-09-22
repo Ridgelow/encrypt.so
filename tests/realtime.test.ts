@@ -205,6 +205,7 @@ describe("realtime client", () => {
     expect(decodeOpaqueEnvelope(String(frame.ciphertext))).toEqual(envelope);
     expect(messaging.posts).toHaveLength(1);
     expect(messaging.posts[0]?.ciphertext).toBe(frame.ciphertext);
+    expect(messaging.posts[0]?.contentType).toBe("application/octet-stream");
     expect(messaging.posts[0]?.senderDeviceId).toBe(DEVICE);
     expect(messaging.posts[0]).not.toHaveProperty("plaintext");
 
@@ -367,5 +368,139 @@ describe("realtime client", () => {
     expect(chat.history.map((message) => ({ id: message.id, text: message.text, expireAt: message.expireAt }))).toEqual([
       { id: "sdk-1", text: "still here", expireAt },
     ]);
+  });
+
+  it("publishes an attachment envelope on the socket and caches only the label", async () => {
+    const cache = createMessageCache(memoryStore());
+    const { chat, socket, messaging } = await startChat({ cache });
+    socket.open();
+    socket.receive({ type: "subscribed", conversationId: CONVO });
+
+    await chat.publish(envelope, "vacation-photo.jpg", { contentType: "attachment/v1" });
+
+    const frame = JSON.parse(socket.sent[1] ?? "") as Record<string, unknown>;
+    expect(frame.contentType).toBe("attachment/v1");
+    expect(frame.ciphertext).toBe(encodeOpaqueEnvelope(envelope));
+    expect(JSON.stringify(frame)).not.toContain("vacation-photo.jpg");
+    expect(JSON.stringify(frame)).not.toContain('"key"');
+    expect(messaging.posts[0]?.contentType).toBe("attachment/v1");
+    expect(messaging.posts[0]?.ciphertext).toBe(frame.ciphertext);
+    expect(await cache.list(CONVO)).toEqual([
+      expect.objectContaining({
+        plaintext: "vacation-photo.jpg",
+        contentType: "attachment/v1",
+        from: "me",
+      }),
+    ]);
+  });
+
+  it("does not cache a content key when the attachment label is a descriptor", async () => {
+    const cache = createMessageCache(memoryStore());
+    const { chat, socket } = await startChat({ cache });
+    socket.open();
+    socket.receive({ type: "subscribed", conversationId: CONVO });
+    await chat.publish(envelope, '{"v":1,"key":"secret-content-key"}', { contentType: "attachment/v1" });
+    const cached = await cache.list(CONVO);
+    expect(cached[0]?.plaintext).toBe("Encrypted attachment");
+    expect(cached[0]?.plaintext).not.toContain("secret-content-key");
+    expect(cached[0]?.contentType).toBe("attachment/v1");
+    expect(JSON.stringify(socket.sent)).not.toContain("secret-content-key");
+  });
+
+  it("does not decrypt or cache an inbound attachment envelope", async () => {
+    const cache = createMessageCache(memoryStore());
+    const decrypt = vi.fn(async () => JSON.stringify({ key: "secret-content-key" }));
+    const { socket, incoming } = await startChat({ cache, decrypt });
+    socket.open();
+    socket.receive({ type: "subscribed", conversationId: CONVO });
+    const inbound = encodeOpaqueEnvelope({
+      ...envelope,
+      senderUserId: BOB,
+      recipientUserId: ALICE,
+      ciphertext: "YXR0YWNobWVudA==",
+    });
+    socket.receive({
+      type: "message",
+      conversationId: CONVO,
+      ciphertext: inbound,
+      contentType: "attachment/v1",
+      clientId: "bob-file",
+      senderDeviceId: "66666666-6666-4666-8666-666666666666",
+      expireAt: null,
+      fromUserId: BOB,
+      id: "server-file",
+      createdAt: 40,
+    });
+    await vi.waitFor(() => expect(incoming).toHaveLength(1));
+    expect(decrypt).not.toHaveBeenCalled();
+    expect(incoming[0]).toMatchObject({
+      id: "bob-file",
+      from: "them",
+      text: "",
+      contentType: "attachment/v1",
+    });
+    expect(incoming[0]?.envelope?.ciphertext).toBe("YXR0YWNobWVudA==");
+    expect(await cache.list(CONVO)).toEqual([]);
+  });
+
+  it("restores attachment history without decrypting the descriptor", async () => {
+    const cache = createMessageCache(memoryStore());
+    await cache.save({
+      id: "mine-file",
+      conversationId: CONVO,
+      plaintext: "notes.pdf",
+      createdAt: 5,
+      from: "me",
+      contentType: "attachment/v1",
+    });
+    const mine = encodeOpaqueEnvelope(envelope);
+    const theirs = encodeOpaqueEnvelope({
+      ...envelope,
+      senderUserId: BOB,
+      recipientUserId: ALICE,
+      ciphertext: "dGhlaXJzLWZpbGU=",
+    });
+    const decrypt = vi.fn(async () => JSON.stringify({ key: "nope" }));
+    const { chat } = await startChat({
+      cache,
+      decrypt,
+      list: [
+        {
+          id: "row-mine-file",
+          conversationId: CONVO,
+          senderDeviceId: DEVICE,
+          ciphertext: mine,
+          contentType: "attachment/v1",
+          createdAt: 5,
+          expireAt: null,
+          clientId: "mine-file",
+        },
+        {
+          id: "row-their-file",
+          conversationId: CONVO,
+          senderDeviceId: "66666666-6666-4666-8666-666666666666",
+          ciphertext: theirs,
+          contentType: "attachment/v1",
+          createdAt: 6,
+          expireAt: null,
+          clientId: "bob-file",
+        },
+      ],
+    });
+    expect(decrypt).not.toHaveBeenCalled();
+    expect(chat.history[0]).toMatchObject({
+      id: "mine-file",
+      from: "me",
+      text: "notes.pdf",
+      contentType: "attachment/v1",
+    });
+    expect(chat.history[1]).toMatchObject({
+      id: "bob-file",
+      from: "them",
+      text: "",
+      contentType: "attachment/v1",
+    });
+    expect(chat.history[1]?.envelope?.ciphertext).toBe("dGhlaXJzLWZpbGU=");
+    expect(chat.history[0]?.envelope).toBeUndefined();
   });
 });

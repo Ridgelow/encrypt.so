@@ -20,7 +20,8 @@ import {
 } from "./safety";
 import { createChunkedStore, type KeyValueStore } from "./store";
 
-export { DeviceKeyError, DeviceKeyStoreUnavailableError, BundleUploadError } from "./errors";
+export { ATTACHMENT_CONTENT_TYPE } from "./attachment";
+export { DeviceKeyError, DeviceKeyStoreUnavailableError, BundleUploadError, AttachmentError } from "./errors";
 export {
   SessionBundleError,
   SessionKeysMissingError,

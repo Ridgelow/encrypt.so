@@ -36,7 +36,15 @@
       "expo-dev-client",
       "expo-font",
       "expo-secure-store",
-      "expo-splash-screen"
+      "expo-splash-screen",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "encrypt_ uses your photos to send encrypted attachments.",
+          "cameraPermission": "encrypt_ uses the camera to send encrypted attachments.",
+          "microphonePermission": false
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

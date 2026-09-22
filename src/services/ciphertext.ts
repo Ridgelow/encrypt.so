@@ -70,11 +70,11 @@ export function ciphertextToEnvelope(ciphertext: string): OpaqueEnvelope {
  */
 export function postBodyForEnvelope(
   envelope: OpaqueEnvelope,
-  options: { clientId: string; expireAt?: number },
+  options: { clientId: string; expireAt?: number; contentType?: string },
 ): PostMessageInput {
   const body: PostMessageInput = {
     ciphertext: envelopeToCiphertext(envelope),
-    contentType: ENVELOPE_CONTENT_TYPE,
+    contentType: options.contentType ?? ENVELOPE_CONTENT_TYPE,
     clientId: options.clientId,
   };
   if (UUID.test(envelope.senderDeviceId)) body.senderDeviceId = envelope.senderDeviceId;

@@ -1,3 +1,4 @@
+import { dispatchAttachment, type AttachmentDeps } from "./attachments";
 import { requireUser, startPhone, verifyPhone } from "./auth";
 import { HttpError, empty, json, readJson } from "./http";
 import { createDevice, getMe, getPrekeyBundle, putPrekeyBundle } from "./identity";
@@ -9,6 +10,42 @@ export { ConversationRoom };
 const USER_HEADER = "x-encrypt-user-id";
 const CONVERSATION_HEADER = "x-encrypt-conversation-id";
 
+function attachmentDeps(env: Env): AttachmentDeps {
+  return {
+    db: {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query);
+        return {
+          bind(...values: unknown[]) {
+            return {
+              first<T>(): Promise<T | null> {
+                return statement.bind(...values).first<T>();
+              },
+            };
+          },
+        };
+      },
+    },
+    blobs: {
+      async put(key, value) {
+        await env.ATTACHMENTS.put(key, value, {
+          httpMetadata: { contentType: "application/octet-stream" },
+        });
+      },
+      async get(key) {
+        const object = await env.ATTACHMENTS.get(key);
+        if (!object) return null;
+        return { arrayBuffer: () => object.arrayBuffer() };
+      },
+    },
+    grants: {
+      get: (key) => env.SESSIONS.get(key),
+      put: (key, value, options) => env.SESSIONS.put(key, value, options),
+      delete: (key) => env.SESSIONS.delete(key),
+    },
+  };
+}
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function pathOf(request: Request): string {
@@ -17,6 +54,9 @@ function pathOf(request: Request): string {
 }
 
 async function route(request: Request, env: Env): Promise<Response> {
+  const attachment = await dispatchAttachment(request, attachmentDeps(env), (req) => requireUser(req, env));
+  if (attachment) return attachment;
+
   const path = pathOf(request);
   const method = request.method;
 

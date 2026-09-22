@@ -1,6 +1,6 @@
 # encrypt.so API
 
-Cloudflare Worker for auth, public identity, ciphertext persistence, and realtime delivery of opaque envelopes. SMS is stubbed: every challenge accepts code `000000`. No private keys and no plaintext messages are stored.
+Cloudflare Worker for auth, public identity, ciphertext persistence, encrypted attachment blobs, and realtime delivery of opaque envelopes. SMS is stubbed: every challenge accepts code `000000`. No private keys and no plaintext messages are stored.
 
 ## Bindings
 
@@ -9,8 +9,9 @@ Cloudflare Worker for auth, public identity, ciphertext persistence, and realtim
 | `DB` | D1 | `encrypt-so` | users, devices, public prekey bundles, conversations, memberships, ciphertext |
 | `SESSIONS` | KV | (namespace you create) | phone challenges, session tokens, start rate limits |
 | `CONVERSATIONS` | Durable Object | `ConversationRoom` | one object per 1:1 conversation; live WebSocket fan-out |
+| `ATTACHMENTS` | R2 | `encrypt-so-attachments` | AES-GCM ciphertext blobs. No filenames. |
 
-`wrangler.toml` ships with placeholder IDs. Local `wrangler dev` ignores them and uses local D1/KV. Replace the IDs before `wrangler deploy`.
+`wrangler.toml` ships with placeholder IDs. Local `wrangler dev` ignores them and uses local D1, KV, and a simulated R2 bucket. Replace the IDs before `wrangler deploy`.
 
 ## First-time setup
 
@@ -20,6 +21,7 @@ npm install
 npx wrangler login
 npx wrangler d1 create encrypt-so
 npx wrangler kv namespace create SESSIONS
+npx wrangler r2 bucket create encrypt-so-attachments
 ```
 
 Copy the printed `database_id` into `wrangler.toml` → `[[d1_databases]].database_id`.
@@ -169,6 +171,39 @@ That prints `401`. A member connects at `ws://127.0.0.1:8787/realtime?conversati
 
 `ciphertext` is an opaque base64 string (the Signal envelope, not plaintext). Field names `plaintext`, `plain_text`, `text`, `body`, `message`, `content`, and anything matching `/private/i` are rejected and are not forwarded or stored. One socket is one conversation. A second chat opens a second socket.
 
+An attachment uses that same frame. `contentType` is `attachment/v1` and `ciphertext` is still the Signal envelope (object key, mime, size, and the content key). The Durable Object does not fetch R2.
+
+## Attachments (R2)
+
+Binding `ATTACHMENTS`, bucket `encrypt-so-attachments`. `wrangler dev` simulates R2 locally under `.wrangler/state`. Create the remote bucket before `wrangler deploy`:
+
+```bash
+npx wrangler r2 bucket create encrypt-so-attachments
+```
+
+Members mint a short-lived upload grant, PUT opaque bytes, then send the Signal envelope through `/messages` or the WebSocket. The worker stores the blob as `application/octet-stream` and does not keep a filename. `$ALICE_TOKEN`, `$BOB_TOKEN`, and `$CONVO_ID` come from the session example above.
+
+```bash
+BASE=http://127.0.0.1:8787
+
+GRANT=$(curl -s -X POST "$BASE/conversations/$CONVO_ID/attachments" \
+  -H "authorization: Bearer $ALICE_TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{}')
+OBJECT=$(echo "$GRANT" | jq -r .objectKey)
+UPLOAD=$(echo "$GRANT" | jq -r .uploadUrl)
+
+# Ciphertext only. JSON, text, and multipart bodies are rejected.
+curl -s -X PUT "$UPLOAD" \
+  -H 'content-type: application/octet-stream' \
+  --data-binary @ciphertext.bin
+
+curl -s -o blob.bin "$BASE/conversations/$CONVO_ID/attachments/$OBJECT" \
+  -H "authorization: Bearer $BOB_TOKEN"
+```
+
+`POST` with a field named `plaintext`, `filename`, `name`, `text`, `body`, `message`, `content`, or anything matching `/private/i` returns 400 and writes nothing. A non-member gets the same 404 as a missing conversation. The upload grant is single-use and expires in 120 seconds.
+
 ## Routes
 
 | Method | Path | Auth | Body → result |
@@ -183,6 +218,9 @@ That prints `401`. A member connects at `ws://127.0.0.1:8787/realtime?conversati
 | GET | `/conversations` | Bearer | conversations the caller belongs to |
 | POST | `/conversations/:id/messages` | Bearer | `{ ciphertext, contentType?, clientId?, senderDeviceId?, expireAt? }` → stored ciphertext |
 | GET | `/conversations/:id/messages` | Bearer | `?cursor=&limit=` oldest-first page; `nextCursor` is a message id |
+| POST | `/conversations/:id/attachments` | Bearer | `{}` → `{ objectKey, uploadUrl, expiresAt }` |
+| PUT | `/attachments/:objectKey?grant=` | upload grant | `application/octet-stream` ciphertext, max 25 MiB |
+| GET | `/conversations/:id/attachments/:objectKey` | Bearer member | opaque ciphertext bytes |
 | GET | `/realtime?conversationId=` | Bearer | WebSocket upgrade. Subscribe, then opaque `{ type: "message" }` frames |
 
 Sessions live in KV for 30 days. Challenges live for 10 minutes. A phone number can start 8 challenges per 10 minutes.
