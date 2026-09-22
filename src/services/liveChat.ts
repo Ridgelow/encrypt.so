@@ -1,3 +1,4 @@
+import { ATTACHMENT_CONTENT_TYPE } from "@/e2ee/attachment";
 import type { OpaqueEnvelope } from "@/e2ee";
 import type { CiphertextMessage, MessagingClient, PostMessageInput } from "@/services/api";
 import { readOpaqueCiphertext } from "@/services/ciphertext";
@@ -19,12 +20,16 @@ export type LiveThreadMessage = {
   envelope?: OpaqueEnvelope;
   /** Unix milliseconds. Null when the message does not disappear. */
   expireAt?: number | null;
+  /** `attachment/v1` is a Signal envelope pointing at an R2 ciphertext, not chat text. */
+  contentType?: string;
 };
 
 export type LivePublishOptions = {
   /** Unix milliseconds copied onto the socket frame and the ciphertext post. */
   expireAt?: number | null;
   createdAt?: number;
+  /** Defaults to `application/octet-stream`. Attachments pass `attachment/v1`. */
+  contentType?: string;
 };
 
 export type LiveChat = {
@@ -87,6 +92,7 @@ export async function openLiveChat(options: {
       senderDeviceId,
       from: message.from,
       ...(typeof message.expireAt === "number" ? { expireAt: message.expireAt } : {}),
+      ...(message.contentType ? { contentType: message.contentType } : {}),
     };
     try {
       await cache.save(entry);
@@ -97,9 +103,23 @@ export async function openLiveChat(options: {
 
   async function incoming(frame: Extract<ServerFrame, { type: "message" }>): Promise<void> {
     if (isExpired(frame.expireAt)) return;
+    const id = frame.clientId ?? frame.id ?? `live-${frame.createdAt}`;
+    if (frame.contentType === ATTACHMENT_CONTENT_TYPE) {
+      const envelope = readOpaqueCiphertext(frame.ciphertext);
+      if (!envelope || envelope.senderUserId === options.localUserId) return;
+      options.onMessage({
+        id,
+        from: "them",
+        text: "",
+        createdAt: frame.createdAt || Date.now(),
+        envelope,
+        expireAt: frame.expireAt,
+        contentType: ATTACHMENT_CONTENT_TYPE,
+      });
+      return;
+    }
     const envelope = readOpaqueCiphertext(frame.ciphertext);
     if (!envelope) return;
-    const id = frame.clientId ?? frame.id ?? `live-${frame.createdAt}`;
     if (envelope.senderUserId === options.localUserId) return;
     let text = "Message unavailable";
     try {
@@ -139,6 +159,41 @@ export async function openLiveChat(options: {
   const seen = new Set<string>();
   for (const row of rows) {
     if (isExpired(row.expireAt)) continue;
+    if (row.contentType === ATTACHMENT_CONTENT_TYPE) {
+      const id = row.clientId ?? row.id;
+      if (seen.has(id)) continue;
+      const envelope = readOpaqueCiphertext(row.ciphertext);
+      const saved = cachedById.get(id) ?? cachedById.get(row.id);
+      const expireAt = row.expireAt ?? saved?.expireAt ?? null;
+      seen.add(id);
+      const mine = envelope?.senderUserId === options.localUserId || saved?.from === "me";
+      if (mine) {
+        const label =
+          saved?.contentType === ATTACHMENT_CONTENT_TYPE && saved.plaintext && !saved.plaintext.includes('"key"')
+            ? saved.plaintext
+            : "Encrypted attachment";
+        history.push({
+          id,
+          from: "me",
+          text: label,
+          createdAt: saved?.createdAt ?? row.createdAt,
+          expireAt,
+          contentType: ATTACHMENT_CONTENT_TYPE,
+        });
+        continue;
+      }
+      if (!envelope) continue;
+      history.push({
+        id,
+        from: "them",
+        text: "",
+        createdAt: row.createdAt,
+        envelope,
+        expireAt,
+        contentType: ATTACHMENT_CONTENT_TYPE,
+      });
+      continue;
+    }
     const envelope = readOpaqueCiphertext(row.ciphertext);
     const id = row.clientId ?? row.id;
     if (seen.has(id)) continue;
@@ -186,6 +241,18 @@ export async function openLiveChat(options: {
   for (const saved of cached) {
     if (seen.has(saved.id) || saved.from !== "me" || isExpired(saved.expireAt)) continue;
     seen.add(saved.id);
+    if (saved.contentType === ATTACHMENT_CONTENT_TYPE) {
+      const label = saved.plaintext.includes('"key"') ? "Encrypted attachment" : saved.plaintext;
+      history.push({
+        id: saved.id,
+        from: "me",
+        text: label,
+        createdAt: saved.createdAt,
+        expireAt: saved.expireAt ?? null,
+        contentType: ATTACHMENT_CONTENT_TYPE,
+      });
+      continue;
+    }
     history.push({
       id: saved.id,
       from: "me",
@@ -219,14 +286,19 @@ export async function openLiveChat(options: {
       const ciphertext = encodeOpaqueEnvelope(envelope);
       const senderDeviceId = isDeviceUuid(envelope.senderDeviceId) ? envelope.senderDeviceId : undefined;
       const expireAt = typeof publishOptions?.expireAt === "number" ? publishOptions.expireAt : undefined;
+      const contentType = publishOptions?.contentType ?? "application/octet-stream";
       const body: PostMessageInput = {
         ciphertext,
-        contentType: "application/octet-stream",
+        contentType,
         clientId,
         senderDeviceId,
       };
       if (expireAt != null) body.expireAt = expireAt;
       const createdAt = publishOptions?.createdAt ?? Date.now();
+      const cachedPlaintext =
+        contentType === ATTACHMENT_CONTENT_TYPE && plaintext.includes('"key"')
+          ? "Encrypted attachment"
+          : plaintext;
       try {
         await connection.sendEnvelope({
           conversationId: conversation.id,
@@ -245,7 +317,14 @@ export async function openLiveChat(options: {
         console.warn("[realtime] persist skipped", err instanceof Error ? err.message : "");
       }
       await remember(
-        { id: clientId, from: "me", text: plaintext, createdAt, expireAt: expireAt ?? null },
+        {
+          id: clientId,
+          from: "me",
+          text: cachedPlaintext,
+          createdAt,
+          expireAt: expireAt ?? null,
+          ...(publishOptions?.contentType ? { contentType: publishOptions.contentType } : {}),
+        },
         senderDeviceId,
       );
       return { id: clientId };

@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { Modal, Pressable, Text, View, StyleSheet } from "react-native";
 import { IconCamera, IconCheck, IconClose, IconFile, IconImage, IconPin } from "@/components/icons";
 import { DISAPPEAR_LABELS } from "@/services/disappear";
@@ -56,12 +57,18 @@ export function DisappearingTimerSheet({
   );
 }
 
-export function AttachmentSheet({ visible, onClose }: SheetProps) {
-  const items = [
-    { label: "Photo", icon: <IconImage /> },
-    { label: "Camera", icon: <IconCamera /> },
-    { label: "File", icon: <IconFile /> },
-    { label: "Location", icon: <IconPin /> },
+export type AttachmentPick = "photo" | "camera" | "file";
+
+export function AttachmentSheet({
+  visible,
+  onClose,
+  onPick,
+}: SheetProps & { onPick?: (kind: AttachmentPick) => void }) {
+  const items: { label: string; kind: AttachmentPick | "location"; icon: ReactNode }[] = [
+    { label: "Photo", kind: "photo", icon: <IconImage /> },
+    { label: "Camera", kind: "camera", icon: <IconCamera /> },
+    { label: "File", kind: "file", icon: <IconFile /> },
+    { label: "Location", kind: "location", icon: <IconPin /> },
   ];
 
   return (
@@ -78,7 +85,15 @@ export function AttachmentSheet({ visible, onClose }: SheetProps) {
           </View>
           <View style={styles.attachRow}>
             {items.map((item) => (
-              <Pressable key={item.label} onPress={onClose} style={styles.attachItem}>
+              <Pressable
+                key={item.label}
+                accessibilityLabel={item.label}
+                onPress={() => {
+                  onClose();
+                  if (item.kind !== "location") onPick?.(item.kind);
+                }}
+                style={styles.attachItem}
+              >
                 <View style={styles.attachIcon}>{item.icon}</View>
                 <Text style={[typography.label, { fontSize: 10 }]}>{item.label}</Text>
               </Pressable>

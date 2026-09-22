@@ -32,8 +32,25 @@ export type Message =
       /** Unix milliseconds. The bubble is removed locally when this time passes. */
       expireAt?: number | null;
     }
-  | { id: string; kind: "image"; from: "me" | "them"; time?: string; receipts?: string }
-  | { id: string; kind: "file"; from: "me" | "them"; name: string; size: string; time?: string };
+  | {
+      id: string;
+      kind: "image";
+      from: "me" | "them";
+      time?: string;
+      receipts?: string;
+      uri?: string;
+      expireAt?: number | null;
+    }
+  | {
+      id: string;
+      kind: "file";
+      from: "me" | "them";
+      name: string;
+      size: string;
+      time?: string;
+      receipts?: string;
+      expireAt?: number | null;
+    };
 
 export const chats: ChatPreview[] = [
   {

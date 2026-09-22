@@ -101,6 +101,13 @@ export type MessagePage = {
   nextCursor: string | null;
 };
 
+/** Short-lived permission to PUT ciphertext. The grant is not a content key. */
+export type AttachmentUpload = {
+  objectKey: string;
+  uploadUrl: string;
+  expiresAt: number;
+};
+
 export type ConversationList = {
   conversations: Conversation[];
 };
@@ -119,6 +126,12 @@ export interface MessagingClient {
     conversationId: string,
     query?: { cursor?: string; limit?: number },
   ): Promise<MessagePage>;
+  /** POST /conversations/:id/attachments {} → upload URL for ciphertext bytes */
+  createAttachmentUpload(token: string, conversationId: string): Promise<AttachmentUpload>;
+  /** PUT the minted URL. Body is opaque ciphertext, not JSON. */
+  uploadAttachment(uploadUrl: string, bytes: Uint8Array): Promise<void>;
+  /** GET /conversations/:id/attachments/:objectKey — members only, ciphertext bytes */
+  downloadAttachment(token: string, conversationId: string, objectKey: string): Promise<Uint8Array>;
 }
 
 /** Locked Auth worker surface. Live and mock clients both implement this. */
@@ -363,7 +376,67 @@ export function createMessagingClient(options: AuthClientOptions): MessagingClie
         { ...transport, token },
       );
     },
+    createAttachmentUpload(token, conversationId) {
+      return request(`/conversations/${encodeURIComponent(conversationId)}/attachments`, {
+        ...transport,
+        method: "POST",
+        token,
+        body: {},
+      });
+    },
+    async uploadAttachment(uploadUrl, bytes) {
+      const url = assertSameOriginUpload(baseUrl, uploadUrl);
+      const fetchImpl = options.fetchImpl ?? fetch;
+      const res = await fetchImpl(url, {
+        method: "PUT",
+        headers: { "content-type": "application/octet-stream", accept: "application/json" },
+        body: new Blob([arrayBufferOf(bytes)], { type: "application/octet-stream" }),
+      });
+      if (!res.ok) throw new ApiError(await readError(res), res.status);
+    },
+    async downloadAttachment(token, conversationId, objectKey) {
+      const fetchImpl = options.fetchImpl ?? fetch;
+      const res = await fetchImpl(
+        `${baseUrl}/conversations/${encodeURIComponent(conversationId)}/attachments/${encodeURIComponent(objectKey)}`,
+        { headers: { authorization: `Bearer ${token}`, accept: "application/octet-stream" } },
+      );
+      if (!res.ok) throw new ApiError(await readError(res), res.status);
+      return new Uint8Array(await res.arrayBuffer());
+    },
   };
+}
+
+function assertSameOriginUpload(base: string, uploadUrl: string): string {
+  let target: URL;
+  try {
+    target = new URL(uploadUrl, base);
+  } catch {
+    throw new ApiError("upload URL rejected", 400);
+  }
+  const origin = new URL(base);
+  if (target.origin !== origin.origin) throw new ApiError("upload URL rejected", 400);
+  if (!/^\/attachments\/[0-9a-f-]{36}$/i.test(target.pathname)) throw new ApiError("upload URL rejected", 400);
+  const grant = target.searchParams.get("grant");
+  if (!grant || !/^[0-9a-f]{64}$/.test(grant)) throw new ApiError("upload URL rejected", 400);
+  return target.toString();
+}
+
+function arrayBufferOf(bytes: Uint8Array): ArrayBuffer {
+  const copy = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(copy).set(bytes);
+  return copy;
+}
+
+async function readError(res: Response): Promise<string> {
+  const text = await res.text();
+  if (!text) return `request failed (${res.status})`;
+  try {
+    const data = JSON.parse(text) as unknown;
+    if (data && typeof data === "object" && "error" in data && typeof data.error === "string") return data.error;
+  } catch {
+    return `request failed (${res.status})`;
+  }
+  return `request failed (${res.status})`;
 }
 
 function liveMessages(): MessagingClient {

@@ -76,3 +76,9 @@ export class SessionMessageError extends DeviceKeyError {
     super("Encrypted message is unreadable.");
   }
 }
+
+export class AttachmentError extends DeviceKeyError {
+  constructor() {
+    super("Encrypted attachment is unreadable.");
+  }
+}

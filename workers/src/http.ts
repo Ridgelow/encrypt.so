@@ -14,11 +14,24 @@ export class HttpError extends Error {
   }
 }
 
-export function json(body: unknown, status = 200): Response {
+export function json(body: unknown, status = 200, extra?: Record<string, string>): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: {
       "content-type": "application/json; charset=utf-8",
+      ...CORS,
+      ...extra,
+    },
+  });
+}
+
+/** Opaque bytes. Callers must not pass plaintext file contents. */
+export function octet(body: ArrayBuffer, status = 200): Response {
+  return new Response(body, {
+    status,
+    headers: {
+      "content-type": "application/octet-stream",
+      "cache-control": "private, no-store",
       ...CORS,
     },
   });

@@ -26,3 +26,9 @@ class_name = "ConversationRoom"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["ConversationRoom"]
+
+# Ciphertext blobs only. `wrangler dev` simulates this bucket locally.
+# Create the remote bucket before `wrangler deploy` (see README.md).
+[[r2_buckets]]
+binding = "ATTACHMENTS"
+bucket_name = "encrypt-so-attachments"

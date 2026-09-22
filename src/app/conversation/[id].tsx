@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Pressable, ScrollView, Text, StyleSheet } from "react-native";
 import { router, useLocalSearchParams } from "expo-router";
 import { ChatComposer, MessageBubble } from "@/components/chat/MessageBubble";
-import { AttachmentSheet, DisappearingTimerSheet } from "@/components/chat/Sheets";
+import { AttachmentSheet, DisappearingTimerSheet, type AttachmentPick } from "@/components/chat/Sheets";
 import { IconLock, IconPeople } from "@/components/icons";
 import { Screen } from "@/components/ui/Screen";
 import { ScreenHeader } from "@/components/ui/ScreenHeader";
@@ -14,8 +14,10 @@ import {
   isPeerUserId,
   type OpaqueEnvelope,
 } from "@/e2ee";
+import { ATTACHMENT_CONTENT_TYPE, bytesToBase64, formatByteSize, openDecryptedAttachment } from "@/e2ee/attachment";
 import { configuredApiOrigin, createMessagingClient, isApiConfigured, type CiphertextMessage } from "@/services/api";
-import { readOpaqueCiphertext, sendDisappearingCiphertext } from "@/services/ciphertext";
+import { stageEncryptedAttachment } from "@/services/attachments";
+import { postBodyForEnvelope, readOpaqueCiphertext, sendDisappearingCiphertext } from "@/services/ciphertext";
 import {
   expireAtForChoice,
   isExpired,
@@ -26,11 +28,12 @@ import {
 } from "@/services/disappear";
 import { liveChatEnabled, openLiveChat, type LiveChat, type LiveThreadMessage } from "@/services/liveChat";
 import { openSecureMessageCache } from "@/services/messageCache";
+import { pickAttachment, type PickedAttachment } from "@/services/pickAttachment";
 import { loadSession } from "@/services/session";
 import { colors } from "@/theme/tokens";
 import { typography } from "@/theme/typography";
 
-type ThreadItem = Message & { envelope?: OpaqueEnvelope; sealed?: boolean };
+type ThreadItem = Message & { envelope?: OpaqueEnvelope; sealed?: boolean; contentType?: string };
 
 function firstParam(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
@@ -49,6 +52,21 @@ function clientId(): string {
 }
 
 function toThread(item: LiveThreadMessage): ThreadItem {
+  if (item.contentType === ATTACHMENT_CONTENT_TYPE) {
+    return {
+      id: item.id,
+      kind: "file",
+      from: item.from,
+      name: item.text || "Encrypted attachment",
+      size: "",
+      time: clock(item.createdAt),
+      receipts: item.from === "me" ? "✓✓" : undefined,
+      envelope: item.envelope,
+      expireAt: item.expireAt,
+      contentType: item.contentType,
+      sealed: item.from === "them" && item.envelope != null,
+    };
+  }
   return {
     id: item.id,
     kind: "text",
@@ -58,6 +76,23 @@ function toThread(item: LiveThreadMessage): ThreadItem {
     receipts: item.from === "me" ? "✓✓" : undefined,
     envelope: item.envelope,
     ...(item.expireAt != null ? { expireAt: item.expireAt } : {}),
+  };
+}
+
+function localAttachment(picked: PickedAttachment, id: string, receipts: string, expireAt: number | null): ThreadItem {
+  const time = clock();
+  if (picked.mime.startsWith("image/") && picked.previewUri) {
+    return { id, kind: "image", from: "me", time, receipts, uri: picked.previewUri, expireAt };
+  }
+  return {
+    id,
+    kind: "file",
+    from: "me",
+    name: picked.name ?? "File",
+    size: formatByteSize(picked.bytes.byteLength),
+    time,
+    receipts,
+    expireAt,
   };
 }
 
@@ -81,7 +116,7 @@ function mergeHttpHistory(current: ThreadItem[], incoming: ThreadItem[]): Thread
   };
   const notes = current.filter((message) => message.kind === "system" && message.id !== "e2ee");
   const incomingIds = new Set(incoming.map((message) => message.id));
-  const pending = current.filter((message) => message.kind === "text" && !incomingIds.has(message.id));
+  const pending = current.filter((message) => message.kind !== "system" && !incomingIds.has(message.id));
   return [banner, ...notes, ...incoming, ...pending];
 }
 
@@ -126,7 +161,7 @@ async function loadHttpThread(input: {
       if (row.clientId) await cache?.remove(row.clientId);
       continue;
     }
-    if (item.from === "them" && item.text !== "Message unavailable") {
+    if (item.kind === "text" && item.from === "them" && item.text !== "Message unavailable") {
       await cache?.save({
         id: row.id,
         conversationId: conversation.id,
@@ -163,8 +198,17 @@ export default function ConversationScreen() {
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
   const conversationIdRef = useRef<string | null>(null);
+  const openingAttachments = useRef(new Set<string>());
+  const openedAttachments = useRef(new Map<string, ThreadItem>());
+  const chatKeyRef = useRef("");
+
+  function shown(item: ThreadItem): ThreadItem {
+    if (item.kind === "system") return item;
+    return openedAttachments.current.get(item.id) ?? item;
+  }
 
   useEffect(() => {
+    chatKeyRef.current = `${id ?? ""}:${peerUserId ?? ""}:${isGroup ? "g" : "d"}`;
     setMessages(openingThread(isGroup, peerUserId));
     setDraft("");
     conversationIdRef.current = null;
@@ -205,8 +249,9 @@ export default function ConversationScreen() {
           decrypt: decryptFromPeer,
           onMessage(item) {
             if (isExpired(item.expireAt)) return;
+            const thread = shown(toThread(item));
             setMessages((current) =>
-              current.some((message) => message.id === item.id) ? current : [...current, toThread(item)],
+              current.some((message) => message.id === thread.id) ? current : [...current, thread],
             );
           },
         });
@@ -217,7 +262,7 @@ export default function ConversationScreen() {
         conversationIdRef.current = chat.conversationId;
         setMessages((current) => {
           const opening = current.filter((message) => message.kind === "system");
-          const live = chat.history.filter((item) => !isExpired(item.expireAt)).map(toThread);
+          const live = chat.history.filter((item) => !isExpired(item.expireAt)).map((item) => shown(toThread(item)));
           const seen = new Set(live.map((message) => message.id));
           const kept = current.filter((message) => message.kind !== "system" && !seen.has(message.id));
           return [...(opening.length ? opening : openingThread(isGroup, peer)), ...live, ...kept];
@@ -234,7 +279,7 @@ export default function ConversationScreen() {
           });
           if (cancelled) return null;
           conversationIdRef.current = loaded.conversationId;
-          setMessages((current) => mergeHttpHistory(current, loaded.items));
+          setMessages((current) => mergeHttpHistory(current, loaded.items).map(shown));
         } catch {
           console.warn("[encrypt] ciphertext history stayed on the server");
         }
@@ -308,7 +353,7 @@ export default function ConversationScreen() {
     const timers: ReturnType<typeof setTimeout>[] = [];
     const due: string[] = [];
     for (const message of messages) {
-      if (message.kind !== "text") continue;
+      if (message.kind === "system") continue;
       const delay = purgeDelay(message.expireAt);
       if (delay == null) continue;
       if (delay === 0) {
@@ -322,6 +367,81 @@ export default function ConversationScreen() {
       for (const timerId of timers) clearTimeout(timerId);
     };
   }, [messages, purgeIds]);
+
+  useEffect(() => {
+    const pending = messages.filter(
+      (message): message is ThreadItem & { kind: "file"; envelope: OpaqueEnvelope } =>
+        message.kind === "file" &&
+        message.sealed === true &&
+        message.contentType === ATTACHMENT_CONTENT_TYPE &&
+        message.envelope != null &&
+        !openingAttachments.current.has(message.id),
+    );
+    if (pending.length === 0) return;
+    const startedKey = chatKeyRef.current;
+    for (const message of pending) openingAttachments.current.add(message.id);
+    void (async () => {
+      const session = await loadSession();
+      const origin = configuredApiOrigin();
+      const conversationId = conversationIdRef.current;
+      if (!session || !origin || !conversationId) {
+        for (const message of pending) openingAttachments.current.delete(message.id);
+        return;
+      }
+      const client = createMessagingClient({ baseUrl: origin });
+      for (const message of pending) {
+        try {
+          const plaintext = await decryptFromPeer(message.envelope);
+          const opened = await openDecryptedAttachment(plaintext, (objectKey) =>
+            client.downloadAttachment(session.sessionToken, conversationId, objectKey),
+          );
+          const preview =
+            opened.mime.startsWith("image/") && opened.bytes.byteLength <= 8 * 1024 * 1024
+              ? `data:${opened.mime};base64,${bytesToBase64(opened.bytes)}`
+              : undefined;
+          const time = message.time;
+          const expireAt = message.expireAt;
+          const next: ThreadItem = preview
+            ? {
+                id: message.id,
+                kind: "image",
+                from: message.from,
+                time,
+                uri: preview,
+                expireAt,
+                sealed: false,
+              }
+            : {
+                id: message.id,
+                kind: "file",
+                from: message.from,
+                name: opened.name ?? "File",
+                size: formatByteSize(opened.bytes.byteLength),
+                time,
+                expireAt,
+                sealed: false,
+              };
+          openedAttachments.current.set(message.id, next);
+          if (chatKeyRef.current !== startedKey) continue;
+          setMessages((current) => current.map((item) => (item.id === message.id ? next : item)));
+        } catch {
+          const failed: ThreadItem = {
+            id: message.id,
+            kind: "file",
+            from: message.from,
+            name: "Attachment unavailable",
+            size: "",
+            time: message.time,
+            expireAt: message.expireAt,
+            sealed: false,
+          };
+          openedAttachments.current.set(message.id, failed);
+          if (chatKeyRef.current !== startedKey) continue;
+          setMessages((current) => current.map((item) => (item.id === message.id ? failed : item)));
+        }
+      }
+    })();
+  }, [messages]);
 
   function selectTimer(next: string) {
     if (next === timer) return;
@@ -421,6 +541,89 @@ export default function ConversationScreen() {
     })();
   }
 
+  function sendAttachment(kind: AttachmentPick) {
+    void (async () => {
+      const picked = await pickAttachment(kind);
+      if (!picked) return;
+      const expireAt = expireAtForChoice(timer) ?? null;
+      const createdAt = Date.now();
+      const localId = clientId();
+      const localOnly = !peerUserId || isGroup;
+      setMessages((current) => {
+        if (current.some((item) => item.id === localId)) return current;
+        return [...current, localAttachment(picked, localId, localOnly ? "✓" : "…", expireAt)];
+      });
+      if (localOnly || !peerUserId) return;
+      try {
+        await ensureSessionWithUser(peerUserId);
+        const session = await loadSession();
+        const origin = configuredApiOrigin();
+        if (!session || !origin) throw new Error("offline");
+        const client = createMessagingClient({ baseUrl: origin });
+        const live = await liveRef.current;
+        let conversationId = live?.conversationId ?? conversationIdRef.current;
+        if (!conversationId) {
+          const conversation = await client.createConversation(session.sessionToken, peerUserId);
+          conversationId = conversation.id;
+          conversationIdRef.current = conversation.id;
+        }
+        const staged = await stageEncryptedAttachment({
+          client,
+          token: session.sessionToken,
+          conversationId,
+          bytes: picked.bytes,
+          mime: picked.mime,
+          name: picked.name,
+          encrypt: (plaintext) => encryptForPeer(peerUserId, plaintext),
+        });
+        if (live) {
+          const published = await live.publish(staged.envelope, staged.label, {
+            contentType: ATTACHMENT_CONTENT_TYPE,
+            expireAt,
+            createdAt,
+          });
+          setMessages((current) =>
+            current.map((item) =>
+              item.id === localId && item.kind !== "system" ? { ...item, id: published.id, receipts: "✓✓" } : item,
+            ),
+          );
+          return;
+        }
+        const posted = await client.postMessage(
+          session.sessionToken,
+          conversationId,
+          postBodyForEnvelope(staged.envelope, {
+            clientId: localId,
+            contentType: ATTACHMENT_CONTENT_TYPE,
+            ...(expireAt != null ? { expireAt } : {}),
+          }),
+        );
+        const cache = await openSecureMessageCache().catch(() => null);
+        await cache?.save({
+          id: localId,
+          conversationId,
+          plaintext: staged.label,
+          createdAt,
+          from: "me",
+          contentType: ATTACHMENT_CONTENT_TYPE,
+          ...(expireAt != null ? { expireAt } : {}),
+        });
+        setMessages((current) =>
+          current.map((item) =>
+            item.id === localId && item.kind !== "system" ? { ...item, id: posted.id, receipts: "✓✓" } : item,
+          ),
+        );
+      } catch {
+        console.warn("[encrypt] attachment stayed on this device");
+        setMessages((current) =>
+          current.map((item) =>
+            item.id === localId && item.kind !== "system" ? { ...item, receipts: "!" } : item,
+          ),
+        );
+      }
+    })();
+  }
+
   return (
     <Screen>
       <ScreenHeader
@@ -464,7 +667,7 @@ export default function ConversationScreen() {
         onTimer={() => setTimerOpen(true)}
         onSend={send}
       />
-      <AttachmentSheet visible={attachOpen} onClose={() => setAttachOpen(false)} />
+      <AttachmentSheet visible={attachOpen} onClose={() => setAttachOpen(false)} onPick={sendAttachment} />
       <DisappearingTimerSheet
         visible={timerOpen}
         onClose={() => setTimerOpen(false)}
@@ -479,8 +682,27 @@ async function rowToThread(
   row: CiphertextMessage,
   localUserId: string,
   cachedPlaintext: string | undefined,
-): Promise<(ThreadItem & { kind: "text" }) | null> {
+): Promise<ThreadItem | null> {
   if (isExpired(row.expireAt)) return null;
+  if (row.contentType === ATTACHMENT_CONTENT_TYPE) {
+    const envelope = tryEnvelope(row.ciphertext);
+    const mine = envelope?.senderUserId === localUserId;
+    const label =
+      mine && cachedPlaintext && !cachedPlaintext.includes('"key"') ? cachedPlaintext : "Encrypted attachment";
+    return {
+      id: row.clientId ?? row.id,
+      kind: "file",
+      from: mine ? "me" : "them",
+      name: label,
+      size: "",
+      time: clock(row.createdAt),
+      receipts: mine ? "✓✓" : undefined,
+      expireAt: row.expireAt,
+      envelope: mine ? undefined : (envelope ?? undefined),
+      contentType: row.contentType,
+      sealed: !mine && envelope != null,
+    };
+  }
   const envelope = tryEnvelope(row.ciphertext);
   if (!envelope) {
     return {

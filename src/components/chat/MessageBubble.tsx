@@ -1,4 +1,4 @@
-import { Pressable, Text, TextInput, View, StyleSheet } from "react-native";
+import { Image, Pressable, Text, TextInput, View, StyleSheet } from "react-native";
 import {
   IconAttach,
   IconClock,
@@ -31,9 +31,13 @@ export function MessageBubble({ message }: { message: Message }) {
     return (
       <View style={[styles.row, mine && styles.rowMine]}>
         <View>
-          <View style={styles.imagePlaceholder}>
-            <IconImage />
-          </View>
+          {message.uri ? (
+            <Image source={{ uri: message.uri }} style={styles.imagePlaceholder} resizeMode="cover" accessibilityLabel="Photo" />
+          ) : (
+            <View style={styles.imagePlaceholder}>
+              <IconImage />
+            </View>
+          )}
           {message.time ? (
             <Text style={[typography.mono, styles.meta, mine && styles.metaMine]}>
               {message.time}
@@ -54,9 +58,15 @@ export function MessageBubble({ message }: { message: Message }) {
           </View>
           <View>
             <Text style={[typography.body, { fontSize: 13.5, color: colors.chalk }]}>{message.name}</Text>
-            <Text style={[typography.mono, { fontSize: 10, color: colors.ghost, marginTop: 2 }]}>
-              {message.size}
-            </Text>
+            {message.size ? (
+              <Text style={[typography.mono, { fontSize: 10, color: colors.ghost, marginTop: 2 }]}>{message.size}</Text>
+            ) : null}
+            {message.time || message.receipts ? (
+              <Text style={[typography.mono, { fontSize: 10, color: colors.ghost, marginTop: 2 }]}>
+                {message.time ?? ""}
+                {message.receipts ? ` ${message.receipts}` : ""}
+              </Text>
+            ) : null}
           </View>
         </View>
       </View>

@@ -37,9 +37,9 @@ Use `encrypt_` (trailing underscore) in the native UI chrome — splash, nav wor
 
 - **Cloudflare Workers + Durable Objects**, native WebSocket API for realtime — not Socket.IO, which needs a persistent Node process and does not run properly on the Workers runtime. A Durable Object per conversation (or per user) is the natural fit for connection state.
 - **D1** (SQLite) for metadata/session data; move to Postgres via Hyperdrive if relational needs outgrow D1
-- **R2** for encrypted attachments/file blobs — server never has plaintext
+- **R2** for encrypted attachments/file blobs — server never has plaintext. Binding `ATTACHMENTS` stores AES-GCM ciphertext only. The Signal envelope (`attachment/v1`) wraps the content key and is sent on the existing message and WebSocket path.
 - **KV** for session tokens / rate limiting
-- Worker source: `workers/` (auth, public prekey bundles, ciphertext routes, and a Durable Object per 1:1 conversation for realtime). See `workers/README.md`.
+- Worker source: `workers/` (auth, public prekey bundles, ciphertext routes, R2 attachment blobs, and a Durable Object per 1:1 conversation for realtime). See `workers/README.md`.
 - Any marketing or web landing page → **Cloudflare Pages**
 
 ## Brand kit — BLACKOUT
