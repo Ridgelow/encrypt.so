@@ -15,3 +15,14 @@ migrations_dir = "migrations"
 [[kv_namespaces]]
 binding = "SESSIONS"
 id = "00000000000000000000000000000000"
+
+# One Durable Object per 1:1 conversation. Both members' sockets live in that
+# object, so fan-out is a local broadcast. A per-user inbox would need a second
+# hop to the peer's object on every message.
+[[durable_objects.bindings]]
+name = "CONVERSATIONS"
+class_name = "ConversationRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ConversationRoom"]

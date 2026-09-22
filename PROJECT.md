@@ -29,7 +29,7 @@ Use `encrypt_` (trailing underscore) in the native UI chrome — splash, nav wor
 
 - **X3DH** for initial key agreement, **Double Ratchet** for per-message forward secrecy
 - **Library:** `@open-e2ee/signal-protocol-sdk` (maintained pure-TypeScript X3DH / PQXDH + Double Ratchet on `@noble/*`). Do not hand-roll the ratchet. Private keys and 1:1 session records live in `expo-secure-store`. The Auth worker stores the public bundle only (`PUT /devices/:id/prekey-bundle`). `GET /users/:userId/prekey-bundle` is what the client uses to start a session. The worker does not publish the ML-KEM prekey, so those sessions use the SDK's classical X3DH path. The SDK's SQLCipher Expo store is not used, so this runs in Expo Go. A development build is required only if a later change adopts that SQLCipher store.
-- **1:1 sessions are client-side only.** `src/e2ee` can establish a session and encrypt or decrypt an opaque envelope. Realtime delivery (Durable Objects, WebSockets) is not implemented. Group messaging is still a separate decision.
+- **1:1 sessions are client-side only.** `src/e2ee` establishes a session and encrypts or decrypts an opaque envelope. A conversation Durable Object fans that ciphertext out over WebSockets. Disappearing-message timers stay on the client and are copied onto `expireAt` at send. Group messaging is still a separate decision.
 - Server sees and stores **ciphertext and minimal metadata only** — treat message body as opaque bytes in the schema from day one, not something to encrypt later
 - **Group messaging** is a separate, harder problem (Signal Sender Keys vs. MLS/OpenMLS) — not yet decided; see [Open decisions](#open-decisions)
 
@@ -39,7 +39,7 @@ Use `encrypt_` (trailing underscore) in the native UI chrome — splash, nav wor
 - **D1** (SQLite) for metadata/session data; move to Postgres via Hyperdrive if relational needs outgrow D1
 - **R2** for encrypted attachments/file blobs — server never has plaintext
 - **KV** for session tokens / rate limiting
-- Worker source: `workers/` (auth + public prekey bundles). See `workers/README.md`.
+- Worker source: `workers/` (auth, public prekey bundles, ciphertext routes, and a Durable Object per 1:1 conversation for realtime). See `workers/README.md`.
 - Any marketing or web landing page → **Cloudflare Pages**
 
 ## Brand kit — BLACKOUT

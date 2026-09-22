@@ -7,11 +7,16 @@
     "deploy": "wrangler deploy",
     "types": "wrangler types",
     "typecheck": "wrangler types --check && tsc --noEmit",
+    "test": "vitest run",
     "migrate:local": "wrangler d1 migrations apply encrypt-so --local",
     "migrate:remote": "wrangler d1 migrations apply encrypt-so --remote"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
+    "@vitest/runner": "^4.1.11",
+    "@vitest/snapshot": "^4.1.11",
     "typescript": "~5.9.2",
+    "vitest": "^4.1.11",
     "wrangler": "^4.40.0"
   }
 }

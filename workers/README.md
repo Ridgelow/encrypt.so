@@ -1,6 +1,6 @@
 # encrypt.so API
 
-Cloudflare Worker for auth, public identity, and ciphertext persistence. SMS is stubbed: every challenge accepts code `000000`. No private keys and no plaintext messages are stored.
+Cloudflare Worker for auth, public identity, ciphertext persistence, and realtime delivery of opaque envelopes. SMS is stubbed: every challenge accepts code `000000`. No private keys and no plaintext messages are stored.
 
 ## Bindings
 
@@ -8,6 +8,7 @@ Cloudflare Worker for auth, public identity, and ciphertext persistence. SMS is 
 | --- | --- | --- | --- |
 | `DB` | D1 | `encrypt-so` | users, devices, public prekey bundles, conversations, memberships, ciphertext |
 | `SESSIONS` | KV | (namespace you create) | phone challenges, session tokens, start rate limits |
+| `CONVERSATIONS` | Durable Object | `ConversationRoom` | one object per 1:1 conversation; live WebSocket fan-out |
 
 `wrangler.toml` ships with placeholder IDs. Local `wrangler dev` ignores them and uses local D1/KV. Replace the IDs before `wrangler deploy`.
 
@@ -137,6 +138,37 @@ curl -s "$BASE/conversations" -H "authorization: Bearer $ALICE_TOKEN"
 
 A body field named `plaintext`, `text`, `body`, `message`, or `content` is rejected with 400. `clientId` retries return the original row. `senderDeviceId` is required only when the sender has more than one device. `expireAt` (unix milliseconds) hides the row from later lists.
 
+## Realtime
+
+One **Durable Object per conversation id**. Both members open a WebSocket into that object, so delivering an envelope is a broadcast inside the object. A per-user inbox would need a second hop to the peer on every message. The object does not store ciphertext and does not add D1 tables. After it accepts a frame it calls the existing `POST /conversations/:id/messages` logic. The client also posts through `createMessagingClient`, and a repeated `clientId` returns the original row.
+
+`wrangler dev` serves HTTP and WebSocket on the same port. Apply the D1 migrations first (the command above). The upgrade requires the same bearer session as `/me`, and the caller must already be a member — create the conversation with `POST /conversations` before connecting.
+
+```bash
+BASE=http://127.0.0.1:8787
+
+# Unauthenticated upgrade is rejected. No socket is opened.
+curl -s -o /dev/null -w '%{http_code}\n' \
+  -H 'connection: upgrade' \
+  -H 'upgrade: websocket' \
+  -H 'sec-websocket-version: 13' \
+  -H 'sec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==' \
+  "$BASE/realtime?conversationId=55555555-5555-4555-8555-555555555555"
+```
+
+That prints `401`. A member connects at `ws://127.0.0.1:8787/realtime?conversationId=<id>` with `Authorization: Bearer <sessionToken>`. The Expo client sets that header on the React Native WebSocket. Frames are JSON text:
+
+| Direction | Frame |
+| --- | --- |
+| client → server | `{ "type": "subscribe", "conversationId" }` |
+| client → server | `{ "type": "message", "conversationId", "ciphertext", "contentType?", "clientId?", "senderDeviceId?", "expireAt?" }` |
+| server → client | `{ "type": "ready", "userId" }` then `{ "type": "subscribed", "conversationId" }` |
+| server → client | `{ "type": "ack", "conversationId", "clientId" }` to the sender |
+| server → client | `{ "type": "message", ...ciphertext, "fromUserId" }` to every other subscribed socket |
+| server → client | `{ "type": "error", "error", "clientId?" }` |
+
+`ciphertext` is an opaque base64 string (the Signal envelope, not plaintext). Field names `plaintext`, `plain_text`, `text`, `body`, `message`, `content`, and anything matching `/private/i` are rejected and are not forwarded or stored. One socket is one conversation. A second chat opens a second socket.
+
 ## Routes
 
 | Method | Path | Auth | Body → result |
@@ -151,5 +183,6 @@ A body field named `plaintext`, `text`, `body`, `message`, or `content` is rejec
 | GET | `/conversations` | Bearer | conversations the caller belongs to |
 | POST | `/conversations/:id/messages` | Bearer | `{ ciphertext, contentType?, clientId?, senderDeviceId?, expireAt? }` → stored ciphertext |
 | GET | `/conversations/:id/messages` | Bearer | `?cursor=&limit=` oldest-first page; `nextCursor` is a message id |
+| GET | `/realtime?conversationId=` | Bearer | WebSocket upgrade. Subscribe, then opaque `{ type: "message" }` frames |
 
 Sessions live in KV for 30 days. Challenges live for 10 minutes. A phone number can start 8 challenges per 10 minutes.
