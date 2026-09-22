@@ -1,4 +1,4 @@
-import { createDevice, isApiConfigured, putPrekeyBundle } from "@/services/api";
+import { createAuthClient, isApiConfigured } from "@/services/api";
 import { loadSession } from "@/services/session";
 import { DeviceKeyStoreUnavailableError } from "./errors";
 import { createExpoKeyValueStore, isDeviceKeyStoreAvailable } from "./expo-key-store";
@@ -9,10 +9,13 @@ export { DeviceKeyError, DeviceKeyStoreUnavailableError, BundleUploadError } fro
 export { ONE_TIME_PREKEY_COUNT, PRIMARY_DEVICE_NAME } from "./contract";
 export type { ProvisionResult } from "./provision";
 
-const api: IdentityApi = {
-  createDevice,
-  putPrekeyBundle,
-};
+function liveApi(origin: string): IdentityApi {
+  const client = createAuthClient({ baseUrl: origin });
+  return {
+    createDevice: (token, name) => client.createDevice(token, name),
+    putPrekeyBundle: (token, deviceId, bundle) => client.putPrekeyBundle(token, deviceId, bundle),
+  };
+}
 
 let store: KeyValueStore | null = null;
 let inflight: Promise<ProvisionResult> | null = null;
@@ -52,7 +55,7 @@ async function run(options?: { republish?: boolean }): Promise<ProvisionResult> 
   return ensureDeviceKeys({
     store: deviceStore(),
     session: await loadSession(),
-    api: origin ? api : null,
+    api: origin ? liveApi(origin) : null,
     apiOrigin: origin,
     republish: options?.republish,
   });
