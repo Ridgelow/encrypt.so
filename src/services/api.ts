@@ -53,6 +53,53 @@ export type DeviceResponse = {
   createdAt: number;
 };
 
+export type PutPrekeyBundleResponse = {
+  deviceId: string;
+  bundleUpdatedAt: number;
+  oneTimePrekeyCount: number;
+};
+
+export type GetPrekeyBundleResponse = {
+  userId: string;
+  bundles: PublicPrekeyBundle[];
+};
+
+/** Locked Auth worker surface. Live and mock clients both implement this. */
+export interface AuthClient {
+  /** POST /auth/phone/start { phone } → { challengeId } */
+  startPhoneAuth(phone: string): Promise<{ challengeId: string }>;
+  /** POST /auth/phone/verify { challengeId, code } → { sessionToken, userId } */
+  verifyPhoneAuth(challengeId: string, code: string): Promise<SessionResponse>;
+  /** GET /me  Authorization: Bearer sessionToken → { user, devices } */
+  getMe(token: string): Promise<MeResponse>;
+  /** POST /devices { name } → device */
+  createDevice(token: string, name: string): Promise<DeviceResponse>;
+  /** PUT /devices/:id/prekey-bundle — public material only */
+  putPrekeyBundle(token: string, deviceId: string, bundle: PrekeyBundleUpload): Promise<PutPrekeyBundleResponse>;
+  /** GET /users/:userId/prekey-bundle → public bundles (one consumed OTPK each) */
+  getPrekeyBundle(token: string, userId: string): Promise<GetPrekeyBundleResponse>;
+}
+
+export type AuthClientOptions = {
+  baseUrl: string;
+  fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+};
+
+function rejectPrivateFields(value: unknown): void {
+  if (Array.isArray(value)) {
+    for (const item of value) rejectPrivateFields(item);
+    return;
+  }
+  if (typeof value !== "object" || value === null) return;
+  for (const [key, child] of Object.entries(value)) {
+    if (/private/i.test(key)) {
+      throw new ApiError("private keys are not accepted", 400);
+    }
+    rejectPrivateFields(child);
+  }
+}
+
 function baseUrl(): string | null {
   const raw = process.env.EXPO_PUBLIC_API_URL?.trim();
   if (!raw) return null;
@@ -76,20 +123,23 @@ type RequestInit = {
   body?: unknown;
   token?: string;
   timeoutMs?: number;
+  baseUrl?: string;
+  fetchImpl?: typeof fetch;
 };
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const base = baseUrl();
+  const base = (init.baseUrl ?? baseUrl())?.replace(/\/$/, "") ?? null;
   if (!base) throw new ApiError("API URL is not configured", 0);
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), init.timeoutMs ?? 8000);
+  const fetchImpl = init.fetchImpl ?? fetch;
   try {
     const headers: Record<string, string> = { Accept: "application/json" };
     if (init.body !== undefined) headers["Content-Type"] = "application/json";
     if (init.token) headers.Authorization = `Bearer ${init.token}`;
 
-    const res = await fetch(`${base}${path}`, {
+    const res = await fetchImpl(`${base}${path}`, {
       method: init.method ?? "GET",
       headers,
       body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
@@ -123,24 +173,66 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
 }
 
+/** Live client. `baseUrl` is the worker origin with no path. */
+export function createAuthClient(options: AuthClientOptions): AuthClient {
+  const baseUrl = options.baseUrl.replace(/\/$/, "");
+  const transport = { baseUrl, fetchImpl: options.fetchImpl, timeoutMs: options.timeoutMs };
+  return {
+    startPhoneAuth(phone) {
+      return request("/auth/phone/start", { ...transport, method: "POST", body: { phone } });
+    },
+    verifyPhoneAuth(challengeId, code) {
+      return request("/auth/phone/verify", {
+        ...transport,
+        method: "POST",
+        body: { challengeId, code },
+      });
+    },
+    getMe(token) {
+      return request("/me", { ...transport, token });
+    },
+    createDevice(token, name) {
+      return request("/devices", { ...transport, method: "POST", token, body: { name } });
+    },
+    async putPrekeyBundle(token, deviceId, bundle) {
+      rejectPrivateFields(bundle);
+      return request(`/devices/${encodeURIComponent(deviceId)}/prekey-bundle`, {
+        ...transport,
+        method: "PUT",
+        token,
+        body: bundle,
+      });
+    },
+    getPrekeyBundle(token, userId) {
+      return request(`/users/${encodeURIComponent(userId)}/prekey-bundle`, { ...transport, token });
+    },
+  };
+}
+
+function live(): AuthClient {
+  const base = baseUrl();
+  if (!base) throw new ApiError("API URL is not configured", 0);
+  return createAuthClient({ baseUrl: base });
+}
+
 /** POST /auth/phone/start */
 export function startPhoneAuth(phone: string): Promise<{ challengeId: string }> {
-  return request("/auth/phone/start", { method: "POST", body: { phone } });
+  return live().startPhoneAuth(phone);
 }
 
 /** POST /auth/phone/verify */
 export function verifyPhoneAuth(challengeId: string, code: string): Promise<SessionResponse> {
-  return request("/auth/phone/verify", { method: "POST", body: { challengeId, code } });
+  return live().verifyPhoneAuth(challengeId, code);
 }
 
 /** GET /me */
 export function getMe(token: string): Promise<MeResponse> {
-  return request("/me", { token });
+  return live().getMe(token);
 }
 
 /** POST /devices */
 export function createDevice(token: string, name: string): Promise<DeviceResponse> {
-  return request("/devices", { method: "POST", token, body: { name } });
+  return live().createDevice(token, name);
 }
 
 /** PUT /devices/:id/prekey-bundle — public material only */
@@ -148,18 +240,11 @@ export function putPrekeyBundle(
   token: string,
   deviceId: string,
   bundle: PrekeyBundleUpload,
-): Promise<{ deviceId: string; bundleUpdatedAt: number; oneTimePrekeyCount: number }> {
-  return request(`/devices/${deviceId}/prekey-bundle`, {
-    method: "PUT",
-    token,
-    body: bundle,
-  });
+): Promise<PutPrekeyBundleResponse> {
+  return live().putPrekeyBundle(token, deviceId, bundle);
 }
 
 /** GET /users/:userId/prekey-bundle — consumes one one-time prekey per device */
-export function getPrekeyBundle(
-  token: string,
-  userId: string,
-): Promise<{ userId: string; bundles: PublicPrekeyBundle[] }> {
-  return request(`/users/${userId}/prekey-bundle`, { token });
+export function getPrekeyBundle(token: string, userId: string): Promise<GetPrekeyBundleResponse> {
+  return live().getPrekeyBundle(token, userId);
 }

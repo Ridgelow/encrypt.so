@@ -28,7 +28,7 @@ Use `encrypt_` (trailing underscore) in the native UI chrome — splash, nav wor
 ### Encryption — Signal Protocol
 
 - **X3DH** for initial key agreement, **Double Ratchet** for per-message forward secrecy
-- **Library:** `libsignal-protocol-typescript` or a maintained fork — do not hand-roll the ratchet
+- **Library:** `@open-e2ee/signal-protocol-sdk` (maintained pure-TypeScript X3DH / PQXDH + Double Ratchet on `@noble/*`). Do not hand-roll the ratchet. Private keys live in `expo-secure-store`. The Auth worker stores the public bundle only (`PUT /devices/:id/prekey-bundle`). The SDK's SQLCipher Expo store is not used, so this lifecycle runs in Expo Go. A development build is required only if a later change adopts that SQLCipher store.
 - Server sees and stores **ciphertext and minimal metadata only** — treat message body as opaque bytes in the schema from day one, not something to encrypt later
 - **Group messaging** is a separate, harder problem (Signal Sender Keys vs. MLS/OpenMLS) — not yet decided; see [Open decisions](#open-decisions)
 
