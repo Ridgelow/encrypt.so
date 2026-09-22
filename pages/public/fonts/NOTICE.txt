@@ -1,0 +1,21 @@
+Font notices for the encrypt.so landing page
+============================================
+
+Hacked
+  Wordmark only (encrypt_).
+  David Libeau. Creative Commons Attribution 4.0.
+  https://creativecommons.org/licenses/by/4.0/
+  Used unmodified.
+
+Barlow (Regular and Medium)
+  Copyright 2017 The Barlow Project Authors (https://github.com/jpt/barlow)
+  SIL Open Font License, Version 1.1. Full text: OFL.txt
+
+Saira Condensed (SemiBold)
+  Copyright 2016 The Saira Project Authors (omnibus.type@gmail.com),
+  with reserved font name "Saira".
+  SIL Open Font License, Version 1.1. The license text matches OFL.txt.
+
+Pixel Operator Mono
+  Copyright 2016 Jayvee Enaguas (HarvettFox96).
+  SIL Open Font License, Version 1.1. The license text matches OFL.txt.

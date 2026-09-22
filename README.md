@@ -23,6 +23,14 @@ npm run build:production    # store
 
 The first `eas build` links an Expo project (`eas login`). Do not commit credentials, `.env`, or Cloudflare tokens.
 
+## Landing
+
+Marketing site for Cloudflare Pages: [`pages/`](pages/README.md). Separate from the app and the API worker.
+
+```bash
+npx wrangler pages deploy --cwd pages
+```
+
 ## Frontend map
 
 Mockups → Expo Router screens under `src/app/`:
