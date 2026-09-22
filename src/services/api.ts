@@ -183,6 +183,11 @@ export function isApiConfigured(): boolean {
   return baseUrl() !== null;
 }
 
+/** Worker origin with no trailing slash, or null when `EXPO_PUBLIC_API_URL` is unset. */
+export function configuredApiOrigin(): string | null {
+  return baseUrl();
+}
+
 /** +1 field plus the digits collected on the phone screen. */
 export function toE164(local: string): string {
   const digits = local.replace(/\D/g, "");

@@ -199,7 +199,13 @@ export async function ensureSessionWithUser(input: EnsureSessionInput): Promise<
   const opened = await openClient(input.store, input.localUserId);
   const protocolDeviceId = protocolDeviceIdFor(opened.index, input.peerUserId, picked.deviceId);
   const remote = ProtocolAddress.create(input.peerUserId, protocolDeviceId);
-  await opened.signal.establishSession(remote, toSdkPreKeyBundle(picked, protocolDeviceId));
+  const bundle = toSdkPreKeyBundle(picked, protocolDeviceId);
+  await opened.signal.establishSession(remote, bundle);
+  try {
+    await opened.storage.saveContactIdentity(remote, bundle.identity, "aci");
+  } catch {
+    // The session state still carries the peer identity for the safety number.
+  }
   await persistPeer(input.store, opened, {
     peerUserId: input.peerUserId,
     peerDeviceId: picked.deviceId,
@@ -342,6 +348,17 @@ async function openClient(store: KeyValueStore, localUserId: string): Promise<Op
   return { signal, storage, device, index };
 }
 
+function remoteIdentityOnSession(record: SdkSessionRecord): CompositeIdentityV1 | null {
+  const remote = record.currentSession?.remoteIdentity;
+  if (!remote || remote.version !== 1) return null;
+  if (typeof remote.x25519PublicKey !== "string" || typeof remote.ed25519PublicKey !== "string") return null;
+  return {
+    version: 1,
+    x25519PublicKey: remote.x25519PublicKey,
+    ed25519PublicKey: remote.ed25519PublicKey,
+  };
+}
+
 async function persistPeer(
   store: KeyValueStore,
   opened: OpenedClient,
@@ -354,7 +371,7 @@ async function persistPeer(
   opened.index = await writePeerSession(store, opened.index, {
     locator,
     record,
-    remoteIdentity: contact?.identity ?? null,
+    remoteIdentity: contact?.identity ?? remoteIdentityOnSession(record),
   });
   await syncConsumedOneTimePreKeys(store, opened);
 }

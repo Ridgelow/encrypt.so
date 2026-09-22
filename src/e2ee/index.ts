@@ -11,6 +11,13 @@ import {
   type EstablishedSession,
   type OpaqueEnvelope,
 } from "./session";
+import {
+  readPeerVerification as readPeerVerificationWith,
+  safetyNumberForPeer as safetyNumberForPeerWith,
+  setPeerVerified as setPeerVerifiedWith,
+  type SafetyFingerprint,
+  type VerifiedPeer,
+} from "./safety";
 import { createChunkedStore, type KeyValueStore } from "./store";
 
 export { DeviceKeyError, DeviceKeyStoreUnavailableError, BundleUploadError } from "./errors";
@@ -27,6 +34,8 @@ export { ONE_TIME_PREKEY_COUNT, PRIMARY_DEVICE_NAME } from "./contract";
 export { isPeerUserId } from "./session";
 export type { ProvisionResult } from "./provision";
 export type { EstablishedSession, OpaqueEnvelope } from "./session";
+export type { SafetyFingerprint, VerifiedPeer } from "./safety";
+export { verificationMatches } from "./safety";
 
 function liveApi(origin: string): IdentityApi {
   const client = createAuthClient({ baseUrl: origin });
@@ -126,4 +135,29 @@ export async function decryptFromPeer(envelope: OpaqueEnvelope): Promise<string>
     localUserId: ready.localUserId,
     envelope,
   });
+}
+
+/**
+ * Safety number for a peer session already on this device.
+ * Call `ensureSessionWithUser` first so the peer identity is stored.
+ */
+export async function safetyNumberForPeer(peerUserId: string): Promise<SafetyFingerprint> {
+  const ready = await readyStore();
+  return safetyNumberForPeerWith({
+    store: ready.store,
+    localUserId: ready.localUserId,
+    peerUserId,
+  });
+}
+
+/** Verified decision pinned to a fingerprint, or null when this peer was never marked. */
+export async function readPeerVerification(peerUserId: string): Promise<VerifiedPeer | null> {
+  const ready = await readyStore();
+  return readPeerVerificationWith(ready.store, peerUserId);
+}
+
+/** Persist or clear the verified state for the fingerprint the user just compared. */
+export async function setPeerVerified(peerUserId: string, fingerprint: string, verified: boolean): Promise<void> {
+  const ready = await readyStore();
+  await setPeerVerifiedWith(ready.store, peerUserId, fingerprint, verified);
 }

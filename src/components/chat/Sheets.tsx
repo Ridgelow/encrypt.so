@@ -1,6 +1,6 @@
 import { Modal, Pressable, Text, View, StyleSheet } from "react-native";
 import { IconCamera, IconCheck, IconClose, IconFile, IconImage, IconPin } from "@/components/icons";
-import { timerOptions } from "@/data/mock";
+import { DISAPPEAR_LABELS } from "@/services/disappear";
 import { colors } from "@/theme/tokens";
 import { typography } from "@/theme/typography";
 
@@ -12,7 +12,7 @@ type SheetProps = {
 export function DisappearingTimerSheet({
   visible,
   onClose,
-  selected = "1 week",
+  selected = "Off",
   onSelect,
 }: SheetProps & { selected?: string; onSelect?: (v: string) => void }) {
   return (
@@ -27,7 +27,7 @@ export function DisappearingTimerSheet({
               <IconClose />
             </Pressable>
           </View>
-          {timerOptions.map((opt) => {
+          {DISAPPEAR_LABELS.map((opt) => {
             const active = opt === selected;
             return (
               <Pressable
