@@ -45,3 +45,6 @@ credentials.json
 
 # tooling
 .claude/
+
+# Cloudflare Wrangler local state
+.wrangler/

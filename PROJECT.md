@@ -41,7 +41,7 @@ Use `encrypt_` (trailing underscore) in the native UI chrome — splash, nav wor
 - **R2** for encrypted attachments/file blobs — server never has plaintext. Binding `ATTACHMENTS` stores AES-GCM ciphertext only. The Signal envelope (`attachment/v1`) wraps the content key and is sent on the existing message and WebSocket path.
 - **KV** for session tokens / rate limiting
 - Worker source: `workers/` (auth, public prekey bundles, ciphertext routes, R2 attachment blobs, and a Durable Object per 1:1 conversation for realtime). See `workers/README.md`.
-- Any marketing or web landing page → **Cloudflare Pages**
+- Any marketing or web landing page → **Cloudflare Pages**. Static source is `pages/` (`npx wrangler pages deploy --cwd pages`). It does not share the API worker.
 
 ## Brand kit — BLACKOUT
 

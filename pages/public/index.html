@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#000000" />
+    <title>encrypt.so — encrypt_</title>
+    <meta
+      name="description"
+      content="encrypt_ is end-to-end encrypted messaging. Messages are sealed on your phone. The server never sees plaintext."
+    />
+    <link rel="canonical" href="https://encrypt.so/" />
+    <meta property="og:title" content="encrypt.so — encrypt_" />
+    <meta
+      property="og:description"
+      content="End-to-end encrypted messaging. The server never sees plaintext."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://encrypt.so/" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <a class="skip" href="#what">Skip to content</a>
+    <header class="site-header">
+      <div class="wrap bar">
+        <a class="brand" href="#top">encrypt.so</a>
+        <nav class="nav" aria-label="Page">
+          <a href="#what">What</a>
+          <a href="#e2ee">E2EE</a>
+          <a href="#privacy">Privacy</a>
+          <a href="#status">Status</a>
+        </nav>
+        <p class="pill">No plaintext</p>
+      </div>
+      <div class="ladder" aria-hidden="true">
+        <span class="swatch swatch-black"></span>
+        <span class="swatch swatch-coal"></span>
+        <span class="swatch swatch-ash"></span>
+        <span class="swatch swatch-graphite"></span>
+        <span class="swatch swatch-iron"></span>
+        <span class="swatch swatch-rule"></span>
+        <span class="swatch swatch-steel"></span>
+        <span class="swatch swatch-ghost"></span>
+        <span class="swatch swatch-smoke"></span>
+        <span class="swatch swatch-chalk"></span>
+        <span class="swatch swatch-white"></span>
+      </div>
+    </header>
+
+    <main id="top">
+      <section class="hero section" aria-labelledby="wordmark">
+        <div class="sweep" aria-hidden="true"></div>
+        <div class="wrap hero-grid">
+          <div>
+            <p class="boot">$ boot --secure</p>
+            <p class="boot boot-ok">establishing identity ...... ok</p>
+            <h1 class="wordmark" id="wordmark">
+              encrypt<span class="caret" aria-hidden="true"></span><span class="sr">_</span>
+            </h1>
+            <p class="lede hero-lede">
+              Messages are sealed on your phone before they leave. Only you and the person you
+              wrote to can read them. encrypt.so carries the envelope.
+            </p>
+            <div class="cta">
+              <a class="btn" href="#status">TestFlight <span class="soon">Soon</span></a>
+              <a class="btn btn-outline" href="#status">Google Play <span class="soon">Soon</span></a>
+            </div>
+          </div>
+          <figure class="terminal">
+            <figcaption>Server view</figcaption>
+            <dl class="readout">
+              <div>
+                <dt>body</dt>
+                <dd>ciphertext</dd>
+              </div>
+              <div>
+                <dt>plaintext</dt>
+                <dd>absent</dd>
+              </div>
+              <div>
+                <dt>private key</dt>
+                <dd>on device</dd>
+              </div>
+              <div>
+                <dt>session</dt>
+                <dd>x3dh + ratchet</dd>
+              </div>
+            </dl>
+          </figure>
+        </div>
+      </section>
+
+      <section class="section" id="what" aria-labelledby="what-title">
+        <div class="wrap">
+          <p class="index">01 — What it is</p>
+          <h2 id="what-title">Private by design</h2>
+          <p class="lede">
+            encrypt.so is a mobile messenger for two people. You write on your phone. The app
+            seals the message, then sends the sealed copy.
+          </p>
+          <ol class="steps">
+            <li>
+              <span class="num">01</span>
+              <div>
+                <h3>Sealed before it leaves</h3>
+                <p>
+                  Encryption runs on the device. The readable message stays between the two
+                  phones in the conversation.
+                </p>
+              </div>
+            </li>
+            <li>
+              <span class="num">02</span>
+              <div>
+                <h3>One conversation, two people</h3>
+                <p>
+                  This version is one-to-one. Each chat has its own session, built when the first
+                  message is sent.
+                </p>
+              </div>
+            </li>
+            <li>
+              <span class="num">03</span>
+              <div>
+                <h3>A timer, when you want one</h3>
+                <p>
+                  Set a disappearing-message timer and the note is removed on both phones when it
+                  runs out.
+                </p>
+              </div>
+            </li>
+          </ol>
+        </div>
+      </section>
+
+      <section class="section rule-top" id="e2ee" aria-labelledby="e2ee-title">
+        <div class="wrap">
+          <p class="index">02 — End-to-end</p>
+          <h2 id="e2ee-title">How a message stays sealed</h2>
+          <p class="lede">
+            Your phone locks the message. Their phone unlocks it. The server holds the locked
+            copy and does not have the key.
+          </p>
+          <ol class="steps">
+            <li>
+              <span class="num">01</span>
+              <div>
+                <h3>Keys live on the phone</h3>
+                <p>
+                  Setup creates a key pair on the device. The private key stays in the phone’s
+                  secure storage. encrypt.so keeps the public key, which is what someone needs to
+                  start a conversation with you. You can compare a safety number in person to
+                  confirm that key belongs to the person you mean.
+                </p>
+              </div>
+            </li>
+            <li>
+              <span class="num">02</span>
+              <div>
+                <h3>The first message agrees on a secret</h3>
+                <p>
+                  The two phones run a key agreement called X3DH. They arrive at a shared secret
+                  without sending that secret across the network. That exchange opens the session.
+                </p>
+              </div>
+            </li>
+            <li>
+              <span class="num">03</span>
+              <div>
+                <h3>Every message gets its own key</h3>
+                <p>
+                  The session moves forward with each message. That step is the Double Ratchet.
+                  A key copied later cannot open messages that were already sent. That property is
+                  forward secrecy.
+                </p>
+              </div>
+            </li>
+            <li>
+              <span class="num">04</span>
+              <div>
+                <h3>The server moves a sealed envelope</h3>
+                <p>
+                  encrypt.so stores ciphertext — the scrambled message — and the small amount of
+                  metadata needed to deliver it to the right device. The words are not in the
+                  database.
+                </p>
+              </div>
+            </li>
+          </ol>
+        </div>
+      </section>
+
+      <section class="band" id="privacy" aria-labelledby="privacy-title">
+        <div class="wrap section">
+          <p class="index">03 — Privacy</p>
+          <h2 id="privacy-title">Plaintext stays on the phones</h2>
+          <ul class="promises">
+            <li>
+              <span class="box" aria-hidden="true"></span>
+              <div>
+                <h3>The server never sees plaintext</h3>
+                <p>
+                  The message is encrypted on your phone before upload. What lands in storage is a
+                  sealed envelope.
+                </p>
+              </div>
+            </li>
+            <li>
+              <span class="box" aria-hidden="true"></span>
+              <div>
+                <h3>Private keys stay on the device</h3>
+                <p>
+                  They sit in the phone’s secure storage. They are not in the API and not in a
+                  backup we hold.
+                </p>
+              </div>
+            </li>
+            <li>
+              <span class="box" aria-hidden="true"></span>
+              <div>
+                <h3>We cannot open a chat</h3>
+                <p>
+                  There is no master key. A request for the words cannot be answered from our
+                  systems, because the words are only on the phones in the conversation.
+                </p>
+              </div>
+            </li>
+            <li>
+              <span class="box" aria-hidden="true"></span>
+              <div>
+                <h3>Metadata stays small</h3>
+                <p>
+                  Next to the ciphertext is enough information to route a message to a device.
+                  The contents of the message are not part of that record.
+                </p>
+              </div>
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="section" id="status" aria-labelledby="status-title">
+        <div class="wrap">
+          <p class="index">04 — Status</p>
+          <h2 id="status-title">Stores, when they are ready</h2>
+          <p class="lede">
+            TestFlight and Google Play are not open yet. These are placeholders until the
+            listings exist.
+          </p>
+          <div class="stores">
+            <article class="store">
+              <p class="kicker">iOS</p>
+              <h3>TestFlight</h3>
+              <p>The public beta link will replace this placeholder.</p>
+              <p class="chip">Coming soon</p>
+            </article>
+            <article class="store">
+              <p class="kicker">Android</p>
+              <h3>Google Play</h3>
+              <p>The Play listing will replace this placeholder.</p>
+              <p class="chip">Coming soon</p>
+            </article>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="wrap foot">
+        <div class="mark">
+          <img
+            src="/images/hr-mark-white.png"
+            width="56"
+            height="56"
+            alt="HR mark"
+          />
+          <span>secured by HR</span>
+        </div>
+        <p class="legal">
+          encrypt.so · Wordmark face Hacked by David Libeau
+          (<a href="https://creativecommons.org/licenses/by/4.0/">CC-BY</a>). Barlow, Saira
+          Condensed, and Pixel Operator Mono are used under the
+          <a href="https://openfontlicense.org/open-font-license/">SIL Open Font License</a>.
+        </p>
+      </div>
+    </footer>
+  </body>
+</html>
