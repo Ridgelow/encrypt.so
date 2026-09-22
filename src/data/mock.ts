@@ -14,6 +14,8 @@ export type Contact = {
   id: string;
   name: string;
   initials: string;
+  /** Auth user id. Mock contacts omit this and stay on the local thread. */
+  userId?: string;
 };
 
 export type Message =

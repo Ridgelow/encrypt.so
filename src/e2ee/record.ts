@@ -108,7 +108,7 @@ export function parseRecord(raw: string): PersistedDeviceKeys {
   if (!isRecord(parsed.identity) || !isRecord(parsed.signedPreKey) || !isRecord(parsed.kyberPreKey)) {
     throw new DeviceKeyRecordError();
   }
-  if (!Array.isArray(parsed.oneTimePreKeys) || parsed.oneTimePreKeys.length < 1) {
+  if (!Array.isArray(parsed.oneTimePreKeys)) {
     throw new DeviceKeyRecordError();
   }
 

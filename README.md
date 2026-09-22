@@ -55,10 +55,14 @@ With a verified session and `EXPO_PUBLIC_API_URL`, the client `POST`s `/devices`
 
 Key generation and `expo-crypto` / `expo-secure-store` are included in Expo Go. Expo Metro selects the SDK's `react-native` random source (`globalThis.crypto`, then `expo-crypto`). The SDK's SQLCipher store is not wired up and would need a development build.
 
-Sessions, websockets, and attachments are not in this change.
+## 1:1 sessions
+
+`ensureSessionWithUser`, `encryptForPeer`, and `decryptFromPeer` (`src/e2ee`) turn plaintext into an opaque base64 envelope and back. Establishing a session calls `GET /users/:userId/prekey-bundle`, picks one device, and runs the SDK's X3DH initiator path. The worker still does not publish the ML-KEM prekey, so that fetch uses the SDK's classical compatibility path. A bundle that includes KEM material takes PQXDH. The first incoming prekey message establishes the responder session from the keys already in Secure Store. Session records stay on device.
+
+The conversation screen encrypts a send when the route id is a real user id, and decrypts a sealed incoming envelope when one is present. Mock chats (Sam, groups) stay local if there is no session. WebSockets, Durable Objects, and attachments are still out of scope — nothing here puts plaintext on an API.
 
 ## Notes
 
-- Chat and attachments are still local mock UI. Durable Objects, R2, and push are not in this tree yet.
+- Mock chats stay on the device. A conversation opened with a real user id encrypts locally, but Durable Objects, R2, and push are not in this tree yet.
 - Wordmark face **Hacked** by David Libeau (CC-BY) — credit required wherever this ships.
 - See `PROJECT.md` for stack and brand decisions.
