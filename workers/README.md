@@ -204,6 +204,26 @@ curl -s -o blob.bin "$BASE/conversations/$CONVO_ID/attachments/$OBJECT" \
 
 `POST` with a field named `plaintext`, `filename`, `name`, `text`, `body`, `message`, `content`, or anything matching `/private/i` returns 400 and writes nothing. A non-member gets the same 404 as a missing conversation. The upload grant is single-use and expires in 120 seconds.
 
+## Push (metadata only)
+
+`POST /push/register` stores an Expo push token for the signed-in user. `deviceId` is optional and, when present, must be a device that user owns. Repeating register for the same token updates the row.
+
+When `POST /conversations/:id/messages` or the conversation Durable Object inserts a new row, the worker notifies every other member's tokens. The Expo payload is only:
+
+- `title` / `body`: `New message`
+- `data`: `{ conversationId, unread: true }`
+
+The stored ciphertext is not loaded for that send. A retried `clientId` (`created: false`) does not send another push.
+
+Delivery needs the Worker secret `EXPO_ACCESS_TOKEN` (`npx wrangler secret put EXPO_ACCESS_TOKEN`). If it is unset, the worker logs `push stub count=… reason=missing EXPO_ACCESS_TOKEN` and does not call `https://exp.host/--/api/v2/push/send`. Apply migration `0003_push_tokens.sql` before register or notify.
+
+```bash
+curl -s -X POST "$BASE/push/register" \
+  -H "authorization: Bearer $ALICE_TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"expoPushToken":"ExponentPushToken[alice-device]","platform":"ios"}'
+```
+
 ## Routes
 
 | Method | Path | Auth | Body → result |
@@ -222,5 +242,7 @@ curl -s -o blob.bin "$BASE/conversations/$CONVO_ID/attachments/$OBJECT" \
 | PUT | `/attachments/:objectKey?grant=` | upload grant | `application/octet-stream` ciphertext, max 25 MiB |
 | GET | `/conversations/:id/attachments/:objectKey` | Bearer member | opaque ciphertext bytes |
 | GET | `/realtime?conversationId=` | Bearer | WebSocket upgrade. Subscribe, then opaque `{ type: "message" }` frames |
+| POST | `/push/register` | Bearer | `{ expoPushToken, platform, deviceId? }` → `{ registered: true }` |
+| POST | `/push/unregister` | Bearer | `{ expoPushToken }` → `{ unregistered: true }` |
 
 Sessions live in KV for 30 days. Challenges live for 10 minutes. A phone number can start 8 challenges per 10 minutes.

@@ -44,6 +44,13 @@
           "cameraPermission": "encrypt_ uses the camera to send encrypted attachments.",
           "microphonePermission": false
         }
+      ],
+      [
+        "expo-notifications",
+        {
+          "color": "#ffffff",
+          "defaultChannel": "messages"
+        }
       ]
     ],
     "experiments": {

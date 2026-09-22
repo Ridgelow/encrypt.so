@@ -32,3 +32,6 @@ new_sqlite_classes = ["ConversationRoom"]
 [[r2_buckets]]
 binding = "ATTACHMENTS"
 bucket_name = "encrypt-so-attachments"
+
+# Optional secret, not a [vars] entry. When unset, push delivery is stubbed.
+#   npx wrangler secret put EXPO_ACCESS_TOKEN

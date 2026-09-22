@@ -1,5 +1,6 @@
 import { HttpError, isRecord } from "./http";
 import { postMessage, requireMember } from "./messages";
+import { notifyNewMessage } from "./push";
 
 /**
  * Realtime fan-out for one 1:1 conversation.
@@ -271,6 +272,14 @@ export class ConversationRoom implements DurableObject {
     if (frame.expireAt != null) body.expireAt = frame.expireAt;
     try {
       const result = await postMessage(this.env, userId, frame.conversationId, body);
+      if (result.created) {
+        const conversationId = frame.conversationId;
+        this.ctx.waitUntil(
+          notifyNewMessage(this.env, { conversationId, senderUserId: userId }).catch(() => {
+            console.error("push notify failed");
+          }),
+        );
+      }
       return {
         id: result.message.id,
         createdAt: result.message.createdAt,
