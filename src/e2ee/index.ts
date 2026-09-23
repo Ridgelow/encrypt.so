@@ -18,10 +18,27 @@ import {
   type SafetyFingerprint,
   type VerifiedPeer,
 } from "./safety";
+import {
+  acceptGroupDistribution,
+  commitGroupDistribution,
+  decryptGroupPlaintext,
+  distributionCiphertext,
+  encryptGroupPlaintext,
+  prepareGroupDistributions,
+  type GroupCiphertext,
+  type PreparedDistributions,
+} from "./group";
+import { LOCAL_PROTOCOL_DEVICE_ID } from "./session";
+import {
+  SENDER_KEY_CONTENT_TYPE,
+  SENDER_KEY_DIST_CONTENT_TYPE,
+  decodeGroupDistribution,
+  decodeGroupSender,
+} from "./group-wire";
 import { createChunkedStore, type KeyValueStore } from "./store";
 
 export { ATTACHMENT_CONTENT_TYPE } from "./attachment";
-export { DeviceKeyError, DeviceKeyStoreUnavailableError, BundleUploadError, AttachmentError } from "./errors";
+export { DeviceKeyError, DeviceKeyStoreUnavailableError, BundleUploadError, AttachmentError, GroupKeyError, GroupMessageError } from "./errors";
 export {
   SessionBundleError,
   SessionKeysMissingError,
@@ -33,8 +50,12 @@ export {
 } from "./errors";
 export { ONE_TIME_PREKEY_COUNT, PRIMARY_DEVICE_NAME } from "./contract";
 export { isPeerUserId } from "./session";
+export { SENDER_KEY_CONTENT_TYPE, SENDER_KEY_DIST_CONTENT_TYPE, LOCAL_PROTOCOL_DEVICE_ID };
+export { decodeGroupDistribution, decodeGroupSender };
 export type { ProvisionResult } from "./provision";
 export type { EstablishedSession, OpaqueEnvelope } from "./session";
+export type { GroupCiphertext, PreparedDistributions } from "./group";
+export type { GroupDistributionPayload, GroupSenderPayload } from "./group-wire";
 export type { SafetyFingerprint, VerifiedPeer } from "./safety";
 export { verificationMatches } from "./safety";
 
@@ -161,4 +182,83 @@ export async function readPeerVerification(peerUserId: string): Promise<Verified
 export async function setPeerVerified(peerUserId: string, fingerprint: string, verified: boolean): Promise<void> {
   const ready = await readyStore();
   await setPeerVerifiedWith(ready.store, peerUserId, fingerprint, verified);
+}
+
+/**
+ * Build 1:1 distribution envelopes for the current sender key.
+ * Rotates that key when the committed member set has changed.
+ */
+export async function prepareGroupSenderKey(
+  groupId: string,
+  memberUserIds: readonly string[],
+): Promise<PreparedDistributions> {
+  const ready = await readyStore();
+  return prepareGroupDistributions({
+    store: ready.store,
+    localUserId: ready.localUserId,
+    groupId,
+    memberUserIds,
+  });
+}
+
+/** Remember a successful distribution so the next send does not rotate again. */
+export async function commitGroupSenderKey(
+  groupId: string,
+  senderKeyId: string,
+  memberUserIds: readonly string[],
+): Promise<void> {
+  const ready = await readyStore();
+  await commitGroupDistribution({
+    store: ready.store,
+    localUserId: ready.localUserId,
+    groupId,
+    senderKeyId,
+    memberUserIds,
+  });
+}
+
+/** Store a peer sender key carried in a pairwise envelope. */
+export async function acceptSenderKeyDistribution(
+  groupId: string,
+  protocolDeviceId: number,
+  envelope: OpaqueEnvelope,
+): Promise<void> {
+  const ready = await readyStore();
+  await acceptGroupDistribution({
+    store: ready.store,
+    localUserId: ready.localUserId,
+    groupId,
+    protocolDeviceId,
+    envelope,
+  });
+}
+
+/** Encrypt one group plaintext with this device's sender key. */
+export async function encryptForGroup(groupId: string, plaintext: string): Promise<GroupCiphertext> {
+  const ready = await readyStore();
+  return encryptGroupPlaintext({
+    store: ready.store,
+    localUserId: ready.localUserId,
+    groupId,
+    plaintext,
+  });
+}
+
+/** Decrypt a sender-key ciphertext addressed to this device. */
+export async function decryptFromGroup(ciphertext: string): Promise<string> {
+  const ready = await readyStore();
+  return decryptGroupPlaintext({
+    store: ready.store,
+    localUserId: ready.localUserId,
+    ciphertext,
+  });
+}
+
+/** Opaque ciphertext for one pairwise sender-key distribution. */
+export function senderKeyDistributionCiphertext(
+  groupId: string,
+  protocolDeviceId: number,
+  envelope: OpaqueEnvelope,
+): string {
+  return distributionCiphertext(groupId, protocolDeviceId, envelope);
 }

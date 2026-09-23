@@ -8,7 +8,7 @@ Cloudflare Worker for auth, public identity, ciphertext persistence, encrypted a
 | --- | --- | --- | --- |
 | `DB` | D1 | `encrypt-so` | users, devices, public prekey bundles, conversations, memberships, ciphertext |
 | `SESSIONS` | KV | (namespace you create) | phone challenges, session tokens, rate-limit counters, blocklist keys |
-| `CONVERSATIONS` | Durable Object | `ConversationRoom` | one object per 1:1 conversation; live WebSocket fan-out |
+| `CONVERSATIONS` | Durable Object | `ConversationRoom` | one object per conversation, including an N-member group; live WebSocket fan-out |
 | `USER_GATES` | Durable Object | `UserGate` | per-user cap on open sockets across conversations. Not a message inbox |
 | `ATTACHMENTS` | R2 | `encrypt-so-attachments` | AES-GCM ciphertext blobs. No filenames. |
 
@@ -141,9 +141,20 @@ curl -s "$BASE/conversations" -H "authorization: Bearer $ALICE_TOKEN"
 
 A body field named `plaintext`, `text`, `body`, `message`, or `content` is rejected with 400. `clientId` retries return the original row. `senderDeviceId` is required only when the sender has more than one device. `expireAt` (unix milliseconds) is the disappearing-message deadline and hides the row from later lists. A separate server ceiling (`MESSAGE_TTL_MS`, from `created_at`) deletes rows even when `expireAt` was omitted. The ceiling is not written back into `expireAt`.
 
+### Groups
+
+`POST /conversations` with `{ title, memberUserIds }` creates a group. `memberUserIds` are the other members (at least two). The caller is added. The same people can have more than one group. `GET /conversations/:id` and `GET /conversations/:id/members` return membership. `POST /conversations/:id/members` with `{ userId }` adds one member. v1 does not remove members. A 1:1 conversation stays a pair. The message body is still one opaque ciphertext for every member. The client encrypts that ciphertext with Signal Sender Keys and distributes each sender key through a 1:1 envelope. The worker does not see the sender key or the plaintext.
+
+```bash
+curl -s -X POST "$BASE/conversations" \
+  -H "authorization: Bearer $ALICE_TOKEN" \
+  -H 'content-type: application/json' \
+  -d "{\"title\":\"Design Crit\",\"memberUserIds\":[\"$BOB_ID\",\"$CAROL_ID\"]}"
+```
+
 ## Realtime
 
-One **Durable Object per conversation id**. Both members open a WebSocket into that object, so delivering an envelope is a broadcast inside the object. A per-user inbox would need a second hop to the peer on every message. The object does not store ciphertext and does not add D1 tables. After it accepts a frame it calls the existing `POST /conversations/:id/messages` logic. The client also posts through `createMessagingClient`, and a repeated `clientId` returns the original row.
+One **Durable Object per conversation id**. Members open a WebSocket into that object, so delivering an envelope is a broadcast inside the object. A group uses the same object: every subscribed member receives the same ciphertext. A per-user inbox would need a second hop to the peer on every message. The object does not store ciphertext and does not add D1 tables. After it accepts a frame it calls the existing `POST /conversations/:id/messages` logic. The client also posts through `createMessagingClient`, and a repeated `clientId` returns the original row.
 
 `wrangler dev` serves HTTP and WebSocket on the same port. Apply the D1 migrations first (the command above). The upgrade requires the same bearer session as `/me`, and the caller must already be a member — create the conversation with `POST /conversations` before connecting.
 

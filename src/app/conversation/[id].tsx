@@ -26,6 +26,7 @@ import {
   saveTimerChoice,
   systemLineForTimer,
 } from "@/services/disappear";
+import { liveGroupEnabled, openGroupChat, type GroupChat } from "@/services/groupChat";
 import { liveChatEnabled, openLiveChat, type LiveChat, type LiveThreadMessage } from "@/services/liveChat";
 import { openSecureMessageCache } from "@/services/messageCache";
 import { pickAttachment, type PickedAttachment } from "@/services/pickAttachment";
@@ -76,6 +77,12 @@ function toThread(item: LiveThreadMessage): ThreadItem {
     receipts: item.from === "me" ? "✓✓" : undefined,
     envelope: item.envelope,
     ...(item.expireAt != null ? { expireAt: item.expireAt } : {}),
+    ...(item.senderUserId
+      ? {
+          sender: item.senderUserId.slice(0, 8),
+          senderInitials: item.senderUserId.slice(0, 2).toUpperCase(),
+        }
+      : {}),
   };
 }
 
@@ -96,11 +103,11 @@ function localAttachment(picked: PickedAttachment, id: string, receipts: string,
   };
 }
 
-function openingThread(isGroup: boolean, peerUserId: string | null): ThreadItem[] {
-  if (isGroup) return groupThread;
-  if (peerUserId) {
+function openingThread(isGroup: boolean, peerUserId: string | null, liveGroup: boolean): ThreadItem[] {
+  if (liveGroup || peerUserId) {
     return [{ id: "e2ee", kind: "system", text: "Messages are end-to-end encrypted" }];
   }
+  if (isGroup) return groupThread;
   return samThread;
 }
 
@@ -186,11 +193,14 @@ export default function ConversationScreen() {
   const userId = firstParam(params.userId);
   const isGroup = group === "1" || id === "design-crit" || id === "hackrice";
   const title = name ?? (isGroup ? "Design Crit" : "Sam");
-  const peerUserId = isPeerUserId(userId) ? userId : isPeerUserId(id) ? id : null;
+  const liveGroupId = isGroup && isPeerUserId(id) ? id : null;
+  const peerUserId = isGroup ? null : isPeerUserId(userId) ? userId : isPeerUserId(id) ? id : null;
   const chat = chats.find((item) => item.id === id);
 
-  const [messages, setMessages] = useState<ThreadItem[]>(() => openingThread(isGroup, peerUserId));
+  const [messages, setMessages] = useState<ThreadItem[]>(() => openingThread(isGroup, peerUserId, Boolean(liveGroupId)));
+  const [memberCount, setMemberCount] = useState<number | null>(null);
   const liveRef = useRef<Promise<LiveChat | null>>(Promise.resolve(null));
+  const groupRef = useRef<Promise<GroupChat | null>>(Promise.resolve(null));
   const [draft, setDraft] = useState("");
   const [attachOpen, setAttachOpen] = useState(false);
   const [timerOpen, setTimerOpen] = useState(false);
@@ -208,12 +218,13 @@ export default function ConversationScreen() {
   }
 
   useEffect(() => {
-    chatKeyRef.current = `${id ?? ""}:${peerUserId ?? ""}:${isGroup ? "g" : "d"}`;
-    setMessages(openingThread(isGroup, peerUserId));
+    chatKeyRef.current = `${id ?? ""}:${peerUserId ?? ""}:${liveGroupId ?? ""}:${isGroup ? "g" : "d"}`;
+    setMessages(openingThread(isGroup, peerUserId, Boolean(liveGroupId)));
+    setMemberCount(null);
     setDraft("");
     conversationIdRef.current = null;
     setTimer("Off");
-  }, [id, isGroup, peerUserId]);
+  }, [id, isGroup, liveGroupId, peerUserId]);
 
   useEffect(() => {
     const chatId = id ?? peerUserId;
@@ -265,7 +276,7 @@ export default function ConversationScreen() {
           const live = chat.history.filter((item) => !isExpired(item.expireAt)).map((item) => shown(toThread(item)));
           const seen = new Set(live.map((message) => message.id));
           const kept = current.filter((message) => message.kind !== "system" && !seen.has(message.id));
-          return [...(opening.length ? opening : openingThread(isGroup, peer)), ...live, ...kept];
+          return [...(opening.length ? opening : openingThread(isGroup, peer, false)), ...live, ...kept];
         });
         return chat;
       } catch (err) {
@@ -297,6 +308,64 @@ export default function ConversationScreen() {
       if (liveRef.current === settled) liveRef.current = Promise.resolve(null);
     };
   }, [isGroup, peerUserId]);
+
+  useEffect(() => {
+    if (!liveGroupEnabled({ groupId: liveGroupId, apiConfigured: isApiConfigured(), hasSession: true })) {
+      groupRef.current = Promise.resolve(null);
+      return;
+    }
+    const groupId = liveGroupId;
+    if (!groupId) return;
+    let cancelled = false;
+    const pending = (async (): Promise<GroupChat | null> => {
+      const session = await loadSession();
+      const origin = configuredApiOrigin();
+      if (!session || !origin || cancelled) return null;
+      try {
+        const chat = await openGroupChat({
+          httpBase: origin,
+          sessionToken: session.sessionToken,
+          localUserId: session.userId,
+          groupId,
+          messaging: createMessagingClient({ baseUrl: origin }),
+          onMessage(item) {
+            if (isExpired(item.expireAt)) return;
+            const thread = shown(toThread(item));
+            setMessages((current) =>
+              current.some((message) => message.id === thread.id) ? current : [...current, thread],
+            );
+          },
+        });
+        if (cancelled) {
+          chat.close();
+          return null;
+        }
+        conversationIdRef.current = chat.conversationId;
+        setMemberCount(chat.memberUserIds.length);
+        setMessages((current) => {
+          const opening = current.filter((message) => message.kind === "system");
+          const live = chat.history.filter((item) => !isExpired(item.expireAt)).map((item) => shown(toThread(item)));
+          const seen = new Set(live.map((message) => message.id));
+          const kept = current.filter((message) => message.kind !== "system" && !seen.has(message.id));
+          return [...(opening.length ? opening : openingThread(true, null, true)), ...live, ...kept];
+        });
+        return chat;
+      } catch (err) {
+        console.warn("[realtime] group stayed on this device", err instanceof Error ? err.message : "");
+        return null;
+      }
+    })();
+    const settled = pending.catch((err) => {
+      console.warn("[realtime] group stayed on this device", err instanceof Error ? err.message : "");
+      return null;
+    });
+    groupRef.current = settled;
+    return () => {
+      cancelled = true;
+      void settled.then((chat) => chat?.close());
+      if (groupRef.current === settled) groupRef.current = Promise.resolve(null);
+    };
+  }, [liveGroupId]);
 
   const sealedKey = messages
     .filter((message) => message.kind === "text" && message.sealed && message.envelope)
@@ -473,6 +542,29 @@ export default function ConversationScreen() {
     setMessages((current) => [...current, local]);
     const cacheConversation = conversationIdRef.current ?? id ?? peerUserId ?? "local";
 
+    if (liveGroupId) {
+      void (async () => {
+        try {
+          const live = await groupRef.current;
+          if (!live) throw new Error("offline");
+          const published = await live.publish(text, { expireAt, createdAt });
+          setMessages((current) =>
+            current.map((item) => (item.id === localId ? { ...item, id: published.id, receipts: "✓✓" } : item)),
+          );
+        } catch {
+          console.warn("[encrypt] group message stayed on this device");
+          await rememberPlaintext({
+            id: localId,
+            conversationId: cacheConversation,
+            plaintext: text,
+            createdAt,
+            expireAt,
+          });
+        }
+      })();
+      return;
+    }
+
     if (!peerUserId || isGroup) {
       void rememberPlaintext({
         id: localId,
@@ -629,7 +721,9 @@ export default function ConversationScreen() {
     <Screen>
       <ScreenHeader
         title={title}
-        subtitle={isGroup ? "4 members" : "End-to-end encrypted"}
+        subtitle={
+          liveGroupId ? `${memberCount ?? "…"} members` : isGroup ? "4 members" : "End-to-end encrypted"
+        }
         onBack={() => router.back()}
         right={
           <Pressable

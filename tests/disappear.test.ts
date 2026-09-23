@@ -68,6 +68,8 @@ describe("disappearing messages", () => {
         return {
           id: stored.conversationId,
           createdAt: 1,
+          kind: "direct",
+          title: null,
           members: [],
         };
       },

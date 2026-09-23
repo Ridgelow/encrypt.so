@@ -4,11 +4,11 @@ import { postMessage, requireMember } from "./messages";
 import { notifyNewMessage } from "./push";
 
 /**
- * Realtime fan-out for one 1:1 conversation.
+ * Realtime fan-out for one conversation, including an N-member group.
  *
- * The object is named by conversation id, so both members' WebSockets are
+ * The object is named by conversation id, so every member's WebSocket is
  * already in the same place and a send is a local broadcast. A per-user inbox
- * would have to look up the peer and forward to a second object on every
+ * would have to look up each peer and forward to another object on every
  * envelope. Membership and ciphertext rows stay in D1 through the existing
  * conversation routes — this object does not create tables.
  */

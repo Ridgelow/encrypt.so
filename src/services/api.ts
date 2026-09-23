@@ -72,7 +72,16 @@ export type ConversationMember = {
 export type Conversation = {
   id: string;
   createdAt: number;
+  kind: "direct" | "group";
+  /** Group metadata. Null on a 1:1 conversation. */
+  title: string | null;
   members: ConversationMember[];
+};
+
+export type CreateGroupInput = {
+  title: string;
+  /** Other members. The signed-in user is added by the worker. */
+  memberUserIds: string[];
 };
 
 /** Opaque ciphertext row. The worker does not have a plaintext field. */
@@ -140,6 +149,17 @@ export interface PushClient {
 export interface MessagingClient {
   /** POST /conversations { peerUserId } → conversation */
   createConversation(token: string, peerUserId: string): Promise<Conversation>;
+  /** POST /conversations { title, memberUserIds } → group of those peers plus the caller */
+  createGroup(token: string, input: CreateGroupInput): Promise<Conversation>;
+  /** GET /conversations/:id */
+  getConversation(token: string, conversationId: string): Promise<Conversation>;
+  /** GET /conversations/:id/members */
+  listMembers(token: string, conversationId: string): Promise<{ members: ConversationMember[] }>;
+  /**
+   * POST /conversations/:id/members { userId }
+   * v1 can add a member. It does not remove one.
+   */
+  addMember(token: string, conversationId: string, userId: string): Promise<Conversation>;
   /** GET /conversations */
   listConversations(token: string): Promise<ConversationList>;
   /** POST /conversations/:id/messages — ciphertext only */
@@ -394,6 +414,30 @@ export function createMessagingClient(options: AuthClientOptions): MessagingClie
         method: "POST",
         token,
         body: { peerUserId },
+      });
+    },
+    createGroup(token, input) {
+      rejectPrivateFields(input);
+      return request("/conversations", {
+        ...transport,
+        method: "POST",
+        token,
+        body: { title: input.title, memberUserIds: input.memberUserIds },
+      });
+    },
+    getConversation(token, conversationId) {
+      return request(`/conversations/${encodeURIComponent(conversationId)}`, { ...transport, token });
+    },
+    listMembers(token, conversationId) {
+      return request(`/conversations/${encodeURIComponent(conversationId)}/members`, { ...transport, token });
+    },
+    addMember(token, conversationId, userId) {
+      rejectPrivateFields({ userId });
+      return request(`/conversations/${encodeURIComponent(conversationId)}/members`, {
+        ...transport,
+        method: "POST",
+        token,
+        body: { userId },
       });
     },
     listConversations(token) {

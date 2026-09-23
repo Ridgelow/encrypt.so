@@ -82,3 +82,15 @@ export class AttachmentError extends DeviceKeyError {
     super("Encrypted attachment is unreadable.");
   }
 }
+
+export class GroupKeyError extends DeviceKeyError {
+  constructor() {
+    super("Group sender key is not available.");
+  }
+}
+
+export class GroupMessageError extends DeviceKeyError {
+  constructor() {
+    super("Group message is unreadable.");
+  }
+}

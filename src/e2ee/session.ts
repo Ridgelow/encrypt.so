@@ -48,7 +48,7 @@ import { assertSecureStoreKey, type KeyValueStore } from "./store";
 const REGISTRATION_ID_SPACE = 16383;
 
 /** This install is one Signal device. The worker device id is stored separately. */
-const LOCAL_PROTOCOL_DEVICE_ID = 1;
+export const LOCAL_PROTOCOL_DEVICE_ID = 1;
 
 const PEER_USER_ID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -103,7 +103,7 @@ export interface DecryptFromPeerInput {
   envelope: OpaqueEnvelope;
 }
 
-interface OpenedClient {
+export interface OpenedClient {
   signal: SignalProtocolClient;
   storage: InMemorySignalProtocolStore;
   device: PersistedDeviceKeys;
@@ -318,6 +318,12 @@ async function seed(storage: InMemorySignalProtocolStore, record: PersistedDevic
     },
     "aci",
   );
+}
+
+/** Rehydrate device keys and 1:1 sessions for one Signal client. */
+export async function openSeededClient(store: KeyValueStore, localUserId: string): Promise<OpenedClient> {
+  assertSecureStoreKey(localUserId);
+  return openClient(store, localUserId);
 }
 
 async function openClient(store: KeyValueStore, localUserId: string): Promise<OpenedClient> {
