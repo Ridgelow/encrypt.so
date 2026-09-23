@@ -18,10 +18,17 @@ EAS profiles are in `eas.json`. Identity stays `encrypt_` / slug `encrypt-so` / 
 ```bash
 npm run build:development   # dev client, internal (device)
 npm run build:preview       # internal distribution (Android APK)
-npm run build:production    # store
+npm run build:production    # store (.aab / .ipa)
+npm run submit:ios          # latest production iOS build → TestFlight
+npm run submit:android:internal  # Play internal track (preview submit profile)
+npm run submit:android      # latest production Android build → Play production
 ```
 
-The first `eas build` links an Expo project (`eas login`). Do not commit credentials, `.env`, or Cloudflare tokens.
+`eas submit` uploads an iOS store build to TestFlight. Promoting that build to the App Store is a separate step in App Store Connect. Android `preview` submits to the Play internal track; `production` submits to the Play production track. Both need a store `.aab` from `build:production` — the preview APK is for sideload, not Play. The development profile is the dev-client APK and is not submitted.
+
+Submit commands pass `--non-interactive` and do not ask for passwords. Apple and Google credentials stay in EAS (`eas credentials`). A CI shell can set `EXPO_TOKEN`. Do not commit credentials, `.env`, service-account JSON, `.p8` keys, or Cloudflare tokens.
+
+Two-device QA for the dev client is in [`docs/qa-two-device.md`](docs/qa-two-device.md).
 
 ## Landing
 
