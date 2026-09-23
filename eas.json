@@ -22,6 +22,27 @@
     }
   },
   "submit": {
-    "production": {}
+    "preview": {
+      "ios": {
+        "bundleIdentifier": "so.encrypt.app",
+        "language": "en-US"
+      },
+      "android": {
+        "applicationId": "so.encrypt.app",
+        "track": "internal",
+        "releaseStatus": "completed"
+      }
+    },
+    "production": {
+      "ios": {
+        "bundleIdentifier": "so.encrypt.app",
+        "language": "en-US"
+      },
+      "android": {
+        "applicationId": "so.encrypt.app",
+        "track": "production",
+        "releaseStatus": "completed"
+      }
+    }
   }
 }
