@@ -1,3 +1,4 @@
+import { attachmentExpireAt, DEFAULT_MESSAGE_TTL_MS, type GuardConfig } from "./guard";
 import { HttpError, isRecord, json, octet, readJson } from "./http";
 
 /**
@@ -29,6 +30,21 @@ export interface AttachmentDb {
 export interface AttachmentBlobs {
   put(key: string, value: Uint8Array | ArrayBuffer): Promise<unknown>;
   get(key: string): Promise<{ arrayBuffer(): Promise<ArrayBuffer> } | null>;
+  delete?(key: string): Promise<void>;
+}
+
+export interface AttachmentRecord {
+  objectKey: string;
+  conversationId: string;
+  byteLength: number;
+  createdAt: number;
+  expireAt: number | null;
+}
+
+export interface AttachmentRecords {
+  put(row: AttachmentRecord): Promise<void>;
+  get(objectKey: string): Promise<{ conversationId: string; expireAt: number | null } | null>;
+  delete(objectKey: string): Promise<void>;
 }
 
 export interface AttachmentGrants {
@@ -43,6 +59,12 @@ export interface AttachmentDeps {
   grants: AttachmentGrants;
   /** Defaults to {@link MAX_ATTACHMENT_BYTES}. */
   maxBytes?: number;
+  /** When set, blobs get a retention deadline and `maxAttachmentBytes` applies. */
+  guard?: GuardConfig;
+  /** Mint and byte upload. Production wires the KV window limiter. */
+  onLimit?: (request: Request, userId: string) => Promise<void>;
+  /** D1 pointer rows. Omitted in unit tests that only check ciphertext bytes. */
+  records?: AttachmentRecords;
 }
 
 type Grant = {
@@ -50,6 +72,8 @@ type Grant = {
   conversationId: string;
   userId: string;
   expiresAt: number;
+  /** Disappearing-message deadline, when the client sent one. Not a content key. */
+  expireAt: number | null;
 };
 
 function rejectSensitiveFields(value: unknown): void {
@@ -89,7 +113,19 @@ async function assertMember(db: AttachmentDb, conversationId: string, userId: st
 }
 
 function maxBytesOf(deps: AttachmentDeps): number {
-  return deps.maxBytes ?? MAX_ATTACHMENT_BYTES;
+  return deps.guard?.maxAttachmentBytes ?? deps.maxBytes ?? MAX_ATTACHMENT_BYTES;
+}
+
+async function limitAttachment(deps: AttachmentDeps, request: Request, userId: string): Promise<void> {
+  await deps.onLimit?.(request, userId);
+}
+
+function requestedExpire(value: unknown): number | null {
+  if (value == null) return null;
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= Date.now()) {
+    throw new HttpError(400, "invalid expireAt");
+  }
+  return value;
 }
 
 async function createUpload(
@@ -101,13 +137,17 @@ async function createUpload(
   const body = await readJson(request);
   if (!isRecord(body)) throw new HttpError(400, "invalid body");
   rejectSensitiveFields(body);
-  if (Object.keys(body).length !== 0) throw new HttpError(400, "unexpected field");
+  for (const key of Object.keys(body)) {
+    if (key !== "expireAt") throw new HttpError(400, "unexpected field");
+  }
+  const expireAt = requestedExpire(body.expireAt);
   await assertMember(deps.db, conversationId, userId);
+  await limitAttachment(deps, request, userId);
 
   const objectKey = crypto.randomUUID();
   const token = randomGrant();
   const expiresAt = Date.now() + GRANT_TTL_SECONDS * 1000;
-  const grant: Grant = { objectKey, conversationId, userId, expiresAt };
+  const grant: Grant = { objectKey, conversationId, userId, expiresAt, expireAt };
   await deps.grants.put(grantKey(token), JSON.stringify(grant), { expirationTtl: GRANT_TTL_SECONDS });
 
   const uploadUrl = new URL(request.url);
@@ -134,6 +174,9 @@ async function putAttachment(request: Request, deps: AttachmentDeps, objectKey: 
   } catch {
     await deps.grants.delete(grantKey(token));
     throw new HttpError(401, "invalid upload grant");
+  }
+  if (typeof grant.expireAt !== "number" || !Number.isInteger(grant.expireAt)) {
+    grant.expireAt = null;
   }
   if (
     grant.objectKey !== objectKey ||
@@ -168,6 +211,7 @@ async function putAttachment(request: Request, deps: AttachmentDeps, objectKey: 
     if (declared > limit) throw new HttpError(413, "attachment too large");
     if (declared < 1) throw new HttpError(400, "invalid attachment");
   }
+  await limitAttachment(deps, request, grant.userId);
 
   const bytes = await request.arrayBuffer();
   if (bytes.byteLength > limit) throw new HttpError(413, "attachment too large");
@@ -178,6 +222,17 @@ async function putAttachment(request: Request, deps: AttachmentDeps, objectKey: 
 
   await deps.grants.delete(grantKey(token));
   await deps.blobs.put(objectPath(grant.conversationId, grant.objectKey), bytes);
+  if (deps.records) {
+    const now = Date.now();
+    const ttl = deps.guard?.messageTtlMs ?? DEFAULT_MESSAGE_TTL_MS;
+    await deps.records.put({
+      objectKey: grant.objectKey,
+      conversationId: grant.conversationId,
+      byteLength: bytes.byteLength,
+      createdAt: now,
+      expireAt: attachmentExpireAt(now, grant.expireAt, ttl),
+    });
+  }
   return json({ objectKey: grant.objectKey, byteLength: bytes.byteLength }, 201, { "cache-control": "no-store" });
 }
 
@@ -188,6 +243,14 @@ async function downloadAttachment(
   objectKey: string,
 ): Promise<Response> {
   await assertMember(deps.db, conversationId, userId);
+  if (deps.records) {
+    const pointer = await deps.records.get(objectKey);
+    if (pointer && pointer.expireAt != null && pointer.expireAt <= Date.now()) {
+      await deps.records.delete(objectKey);
+      await deps.blobs.delete?.(objectPath(conversationId, objectKey));
+      throw new HttpError(404, "attachment not found");
+    }
+  }
   const stored = await deps.blobs.get(objectPath(conversationId, objectKey));
   if (!stored) throw new HttpError(404, "attachment not found");
   return octet(await stored.arrayBuffer());

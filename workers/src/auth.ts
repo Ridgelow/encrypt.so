@@ -1,9 +1,10 @@
+import { assertAllowed, assertAuthUnlocked, clearAuthFailure, enforceLimit, recordAuthFailure, sessionsKv } from "./abuse";
+import { loadGuardConfig } from "./guard";
 import { HttpError, isRecord, rejectPrivateFields } from "./http";
 
 const STUB_CODE = "000000";
 const CHALLENGE_TTL_SECONDS = 60 * 10;
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30;
-const MAX_STARTS = 8;
 const MAX_ATTEMPTS = 5;
 
 type Challenge = {
@@ -29,11 +30,11 @@ function randomToken(): string {
   return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-async function bumpRateLimit(env: Env, phone: string): Promise<void> {
-  const key = `ratelimit:start:${phone}`;
-  const current = Number((await env.SESSIONS.get(key)) ?? "0");
-  if (current >= MAX_STARTS) throw new HttpError(429, "slow down");
-  await env.SESSIONS.put(key, String(current + 1), { expirationTtl: CHALLENGE_TTL_SECONDS });
+async function limitStart(env: Env, phone: string, ip: string): Promise<void> {
+  const config = loadGuardConfig(env);
+  const kv = sessionsKv(env);
+  await enforceLimit(kv, `rl:v1:auth-start:ip:${ip}`, config.authStartPerIp, config.authStartWindowMs);
+  await enforceLimit(kv, `rl:v1:auth-start:phone:${phone}`, config.authStartPerPhone, config.authStartWindowMs);
 }
 
 /**
@@ -41,11 +42,17 @@ async function bumpRateLimit(env: Env, phone: string): Promise<void> {
  * { phone } → { challengeId }
  * Stub SMS: the code is always 000000, stored in KV until it expires.
  */
-export async function startPhone(env: Env, body: unknown): Promise<{ challengeId: string }> {
+export async function startPhone(
+  env: Env,
+  body: unknown,
+  scope?: { ip?: string },
+): Promise<{ challengeId: string }> {
   if (!isRecord(body)) throw new HttpError(400, "invalid body");
   rejectPrivateFields(body);
   const phone = normalizePhone(body.phone);
-  await bumpRateLimit(env, phone);
+  const ip = scope?.ip ?? "unknown";
+  await assertAllowed(env, { phone });
+  await limitStart(env, phone, ip);
 
   const challengeId = crypto.randomUUID();
   const challenge: Challenge = { phone, code: STUB_CODE, attempts: 0 };
@@ -85,6 +92,7 @@ async function findOrCreateUser(env: Env, phone: string): Promise<string> {
 export async function verifyPhone(
   env: Env,
   body: unknown,
+  scope?: { ip?: string },
 ): Promise<{ sessionToken: string; userId: string }> {
   if (!isRecord(body)) throw new HttpError(400, "invalid body");
   rejectPrivateFields(body);
@@ -96,16 +104,29 @@ export async function verifyPhone(
   if (typeof code !== "string" || !/^\d{6}$/.test(code)) {
     throw new HttpError(400, "code required");
   }
+  const ip = scope?.ip ?? "unknown";
+  const config = loadGuardConfig(env);
+  await assertAuthUnlocked(env, ip);
+  await enforceLimit(
+    sessionsKv(env),
+    `rl:v1:auth-verify:ip:${ip}`,
+    config.authVerifyPerIp,
+    config.authVerifyWindowMs,
+  );
 
   const key = `challenge:${challengeId}`;
   const raw = await env.SESSIONS.get(key);
-  if (!raw) throw new HttpError(401, "code rejected");
+  if (!raw) {
+    await recordAuthFailure(env, ip, config);
+    throw new HttpError(401, "code rejected");
+  }
 
   let challenge: Challenge;
   try {
     challenge = JSON.parse(raw) as Challenge;
   } catch {
     await env.SESSIONS.delete(key);
+    await recordAuthFailure(env, ip, config);
     throw new HttpError(401, "code rejected");
   }
 
@@ -118,9 +139,11 @@ export async function verifyPhone(
         expirationTtl: CHALLENGE_TTL_SECONDS,
       });
     }
+    await recordAuthFailure(env, ip, config);
     throw new HttpError(401, "code rejected");
   }
 
+  await clearAuthFailure(env, ip);
   await env.SESSIONS.delete(key);
   const userId = await findOrCreateUser(env, challenge.phone);
   const sessionToken = randomToken();
@@ -140,6 +163,7 @@ export async function requireUser(request: Request, env: Env): Promise<string> {
   try {
     const session = JSON.parse(raw) as Session;
     if (!session.userId) throw new Error("missing user");
+    await assertAllowed(env, { userId: session.userId });
     return session.userId;
   } catch {
     throw new HttpError(401, "invalid session");

@@ -150,8 +150,12 @@ export interface MessagingClient {
     conversationId: string,
     query?: { cursor?: string; limit?: number },
   ): Promise<MessagePage>;
-  /** POST /conversations/:id/attachments {} → upload URL for ciphertext bytes */
-  createAttachmentUpload(token: string, conversationId: string): Promise<AttachmentUpload>;
+  /**
+   * POST /conversations/:id/attachments.
+   * Body is `{}`, or `{ expireAt }` when the chat timer is on. `expireAt` is the
+   * same disappearing deadline as a message, not a filename.
+   */
+  createAttachmentUpload(token: string, conversationId: string, expireAt?: number): Promise<AttachmentUpload>;
   /** PUT the minted URL. Body is opaque ciphertext, not JSON. */
   uploadAttachment(uploadUrl: string, bytes: Uint8Array): Promise<void>;
   /** GET /conversations/:id/attachments/:objectKey — members only, ciphertext bytes */
@@ -415,12 +419,12 @@ export function createMessagingClient(options: AuthClientOptions): MessagingClie
         { ...transport, token },
       );
     },
-    createAttachmentUpload(token, conversationId) {
+    createAttachmentUpload(token, conversationId, expireAt) {
       return request(`/conversations/${encodeURIComponent(conversationId)}/attachments`, {
         ...transport,
         method: "POST",
         token,
-        body: {},
+        body: typeof expireAt === "number" ? { expireAt } : {},
       });
     },
     async uploadAttachment(uploadUrl, bytes) {

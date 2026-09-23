@@ -574,6 +574,7 @@ export default function ConversationScreen() {
           bytes: picked.bytes,
           mime: picked.mime,
           name: picked.name,
+          expireAt,
           encrypt: (plaintext) => encryptForPeer(peerUserId, plaintext),
         });
         if (live) {

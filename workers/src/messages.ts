@@ -1,7 +1,10 @@
+import { enforceLimit, sessionsKv } from "./abuse";
+import { loadGuardConfig, retentionFloor } from "./guard";
 import { HttpError, isRecord, rejectPrivateFields } from "./http";
+import { purgeConversation } from "./purge";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const CIPHERTEXT_RE = /^[A-Za-z0-9+/_-]{4,49152}={0,2}$/;
+const CIPHERTEXT_RE = /^[A-Za-z0-9+/_-]{4,}={0,2}$/;
 const CONTENT_TYPE_RE = /^[\w!#$&^_.+-]{1,64}(?:\/[\w!#$&^_.+-]{1,64})?$/;
 const CLIENT_ID_RE = /^[\w.-]{1,64}$/;
 const DEFAULT_CONTENT_TYPE = "application/octet-stream";
@@ -236,10 +239,10 @@ async function resolveSenderDevice(env: Env, userId: string, requested: unknown)
   return devices.results[0].id;
 }
 
-function parseCiphertext(value: unknown): string {
-  if (typeof value !== "string" || !CIPHERTEXT_RE.test(value)) {
-    throw new HttpError(400, "invalid ciphertext");
-  }
+function parseCiphertext(value: unknown, maxChars: number): string {
+  if (typeof value !== "string" || value.length < 4) throw new HttpError(400, "invalid ciphertext");
+  if (value.length > maxChars) throw new HttpError(413, "envelope too large");
+  if (!CIPHERTEXT_RE.test(value)) throw new HttpError(400, "invalid ciphertext");
   return value;
 }
 
@@ -303,10 +306,12 @@ export async function postMessage(
   userId: string,
   conversationId: string,
   body: unknown,
+  scope?: { ip?: string },
 ): Promise<{ message: CiphertextMessage; created: boolean }> {
   const record = checkedBody(body);
   if (record.ciphertext == null) throw new HttpError(400, "ciphertext required");
-  const ciphertext = parseCiphertext(record.ciphertext);
+  const config = loadGuardConfig(env);
+  const ciphertext = parseCiphertext(record.ciphertext, config.maxCiphertextChars);
   const contentType = parseContentType(record.contentType);
   const clientId = parseClientId(record.clientId);
   const createdAt = Date.now();
@@ -323,6 +328,17 @@ export async function postMessage(
       }
       return { message: existing, created: false };
     }
+  }
+
+  const kv = sessionsKv(env);
+  if (scope?.ip) {
+    await enforceLimit(kv, `rl:v1:msg:ip:${scope.ip}`, config.messagePerIp, config.messageWindowMs);
+  }
+  await enforceLimit(kv, `rl:v1:msg:user:${userId}`, config.messagePerUser, config.messageWindowMs);
+  try {
+    await purgeConversation(env, conversationId, createdAt);
+  } catch {
+    console.error("purge failed");
   }
 
   const id = crypto.randomUUID();
@@ -366,7 +382,9 @@ function parseLimit(raw: string | null): number {
 
 /**
  * GET /conversations/:id/messages?cursor=&limit=
- * Pages oldest-first. `cursor` is a message id from `nextCursor`. Expired rows are omitted.
+ * Pages oldest-first. `cursor` is a message id from `nextCursor`.
+ * Rows are omitted once `expire_at` passes (disappearing messages) or once
+ * `created_at` is older than `MESSAGE_TTL_MS`. Those rows are deleted.
  */
 export async function listMessages(
   env: Env,
@@ -377,6 +395,12 @@ export async function listMessages(
   await requireMember(env, conversationId, userId);
   const limit = parseLimit(query.limit);
   const now = Date.now();
+  const floor = retentionFloor(now, loadGuardConfig(env).messageTtlMs);
+  try {
+    await purgeConversation(env, conversationId, now);
+  } catch {
+    console.error("purge failed");
+  }
 
   let cursorCreatedAt: number | null = null;
   let cursorId: string | null = null;
@@ -398,21 +422,23 @@ export async function listMessages(
          FROM messages
          WHERE conversation_id = ?
            AND (expire_at IS NULL OR expire_at > ?)
+           AND created_at > ?
            AND (created_at > ? OR (created_at = ? AND id > ?))
          ORDER BY created_at ASC, id ASC
          LIMIT ?`,
       )
-        .bind(conversationId, now, cursorCreatedAt, cursorCreatedAt, cursorId, limit + 1)
+        .bind(conversationId, now, floor, cursorCreatedAt, cursorCreatedAt, cursorId, limit + 1)
         .all<MessageRow>()
     : await env.DB.prepare(
         `SELECT id, conversation_id, sender_device_id, ciphertext, content_type, created_at, expire_at, client_id
          FROM messages
          WHERE conversation_id = ?
            AND (expire_at IS NULL OR expire_at > ?)
+           AND created_at > ?
          ORDER BY created_at ASC, id ASC
          LIMIT ?`,
       )
-        .bind(conversationId, now, limit + 1)
+        .bind(conversationId, now, floor, limit + 1)
         .all<MessageRow>();
 
   const hasMore = rows.results.length > limit;

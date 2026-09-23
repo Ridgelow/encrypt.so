@@ -6,12 +6,27 @@ const CORS: Record<string, string> = {
 };
 
 export class HttpError extends Error {
+  readonly retryAfter?: number;
+  readonly headers?: Record<string, string>;
+
   constructor(
     readonly status: number,
     message: string,
+    options?: { retryAfter?: number },
   ) {
     super(message);
+    this.name = "HttpError";
+    if (options?.retryAfter != null) {
+      this.retryAfter = options.retryAfter;
+      this.headers = { "retry-after": String(options.retryAfter) };
+    }
   }
+}
+
+export function errorResponse(err: HttpError): Response {
+  const body =
+    err.retryAfter != null ? { error: err.message, retryAfter: err.retryAfter } : { error: err.message };
+  return json(body, err.status, err.headers);
 }
 
 export function json(body: unknown, status = 200, extra?: Record<string, string>): Response {
@@ -43,10 +58,14 @@ export function empty(): Response {
 
 const MAX_BODY = 64 * 1024;
 
-export async function readJson(request: Request): Promise<unknown> {
+export async function readJson(request: Request, maxBytes = MAX_BODY): Promise<unknown> {
+  const declared = request.headers.get("content-length");
+  if (declared != null && /^\d+$/.test(declared) && Number(declared) > maxBytes) {
+    throw new HttpError(413, "body too large");
+  }
   const text = await request.text();
   if (!text) throw new HttpError(400, "empty body");
-  if (text.length > MAX_BODY) throw new HttpError(413, "body too large");
+  if (text.length > maxBytes) throw new HttpError(413, "body too large");
   try {
     return JSON.parse(text) as unknown;
   } catch {
