@@ -22,6 +22,8 @@ export type LiveThreadMessage = {
   expireAt?: number | null;
   /** `attachment/v1` is a Signal envelope pointing at an R2 ciphertext, not chat text. */
   contentType?: string;
+  /** Group sender. Absent on a 1:1 thread. */
+  senderUserId?: string;
 };
 
 export type LivePublishOptions = {

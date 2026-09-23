@@ -10,6 +10,9 @@ const CLIENT_ID_RE = /^[\w.-]{1,64}$/;
 const DEFAULT_CONTENT_TYPE = "application/octet-stream";
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
+const MIN_GROUP_PEERS = 2;
+const MAX_GROUP_MEMBERS = 32;
+const MAX_TITLE_LENGTH = 64;
 const PLAINTEXT_FIELD = /^(plaintext|plain_text|text|body|message|content)$/i;
 
 export type Member = {
@@ -17,9 +20,14 @@ export type Member = {
   joinedAt: number;
 };
 
+export type ConversationKind = "direct" | "group";
+
 export type Conversation = {
   id: string;
   createdAt: number;
+  kind: ConversationKind;
+  /** Group metadata. Null on a 1:1 conversation. Not message plaintext. */
+  title: string | null;
   members: Member[];
 };
 
@@ -73,6 +81,21 @@ function pairKey(a: string, b: string): string {
   return [a, b].sort().join(":");
 }
 
+function groupKey(conversationId: string): string {
+  return `group:${conversationId}`;
+}
+
+type ConversationRow = {
+  id: string;
+  created_at: number;
+  kind: string;
+  title: string | null;
+};
+
+function asKind(value: string): ConversationKind {
+  return value === "group" ? "group" : "direct";
+}
+
 function toMessage(row: MessageRow): CiphertextMessage {
   return {
     id: row.id,
@@ -92,9 +115,9 @@ function isUniqueViolation(err: unknown): boolean {
 }
 
 async function loadConversation(env: Env, id: string): Promise<Conversation | null> {
-  const row = await env.DB.prepare("SELECT id, created_at FROM conversations WHERE id = ?")
+  const row = await env.DB.prepare("SELECT id, created_at, kind, title FROM conversations WHERE id = ?")
     .bind(id)
-    .first<{ id: string; created_at: number }>();
+    .first<ConversationRow>();
   if (!row) return null;
   const members = await env.DB.prepare(
     "SELECT user_id, joined_at FROM memberships WHERE conversation_id = ? ORDER BY user_id ASC",
@@ -104,6 +127,8 @@ async function loadConversation(env: Env, id: string): Promise<Conversation | nu
   return {
     id: row.id,
     createdAt: row.created_at,
+    kind: asKind(row.kind),
+    title: row.title,
     members: members.results.map((member) => ({ userId: member.user_id, joinedAt: member.joined_at })),
   };
 }
@@ -142,11 +167,9 @@ export async function createConversation(
   const createdAt = Date.now();
   try {
     await env.DB.batch([
-      env.DB.prepare("INSERT INTO conversations (id, created_at, pair_key) VALUES (?, ?, ?)").bind(
-        id,
-        createdAt,
-        pairKey(userId, peerUserId),
-      ),
+      env.DB.prepare(
+        "INSERT INTO conversations (id, created_at, pair_key, kind, title) VALUES (?, ?, ?, 'direct', NULL)",
+      ).bind(id, createdAt, pairKey(userId, peerUserId)),
       env.DB.prepare(
         "INSERT INTO memberships (conversation_id, user_id, joined_at) VALUES (?, ?, ?)",
       ).bind(id, userId, createdAt),
@@ -161,29 +184,131 @@ export async function createConversation(
     throw err;
   }
 
-  return {
-    created: true,
-    conversation: {
-      id,
-      createdAt,
-      members: [
-        { userId, joinedAt: createdAt },
-        { userId: peerUserId, joinedAt: createdAt },
-      ].sort((a, b) => a.userId.localeCompare(b.userId)),
-    },
-  };
+  const conversation = await loadConversation(env, id);
+  if (!conversation) throw new HttpError(500, "internal");
+  return { created: true, conversation };
+}
+
+function parseTitle(value: unknown): string {
+  if (typeof value !== "string") throw new HttpError(400, "invalid title");
+  const title = value.trim();
+  if (title.length < 1 || title.length > MAX_TITLE_LENGTH) throw new HttpError(400, "invalid title");
+  if (/[\u0000-\u001f]/.test(title)) throw new HttpError(400, "invalid title");
+  return title;
+}
+
+function parseMemberIds(value: unknown, userId: string): string[] {
+  if (!Array.isArray(value)) throw new HttpError(400, "invalid memberUserIds");
+  const ids: string[] = [];
+  for (const item of value) {
+    const memberId = asUuid(item, "memberUserIds");
+    if (memberId === userId) throw new HttpError(400, "cannot include yourself");
+    if (ids.includes(memberId)) throw new HttpError(400, "duplicate member");
+    ids.push(memberId);
+  }
+  if (ids.length < MIN_GROUP_PEERS) throw new HttpError(400, "at least two members");
+  if (ids.length + 1 > MAX_GROUP_MEMBERS) throw new HttpError(400, "too many members");
+  return ids;
+}
+
+/**
+ * POST /conversations { title, memberUserIds }
+ * Creates a group. `memberUserIds` are the other members. The caller is added.
+ * A later call creates another group. Removal is not supported in v1.
+ */
+export async function createGroupConversation(
+  env: Env,
+  userId: string,
+  body: unknown,
+): Promise<Conversation> {
+  const record = checkedBody(body);
+  if (record.peerUserId != null) throw new HttpError(400, "invalid body");
+  const title = parseTitle(record.title);
+  const memberIds = parseMemberIds(record.memberUserIds, userId);
+  const placeholders = memberIds.map(() => "?").join(", ");
+  const found = await env.DB.prepare(`SELECT id FROM users WHERE id IN (${placeholders})`)
+    .bind(...memberIds)
+    .all<{ id: string }>();
+  if (found.results.length !== memberIds.length) throw new HttpError(404, "user not found");
+
+  const id = crypto.randomUUID();
+  const createdAt = Date.now();
+  const statements = [
+    env.DB.prepare(
+      "INSERT INTO conversations (id, created_at, pair_key, kind, title) VALUES (?, ?, ?, 'group', ?)",
+    ).bind(id, createdAt, groupKey(id), title),
+    env.DB.prepare(
+      "INSERT INTO memberships (conversation_id, user_id, joined_at) VALUES (?, ?, ?)",
+    ).bind(id, userId, createdAt),
+    ...memberIds.map((memberId) =>
+      env.DB.prepare(
+        "INSERT INTO memberships (conversation_id, user_id, joined_at) VALUES (?, ?, ?)",
+      ).bind(id, memberId, createdAt),
+    ),
+  ];
+  await env.DB.batch(statements);
+  const conversation = await loadConversation(env, id);
+  if (!conversation) throw new HttpError(500, "internal");
+  return conversation;
+}
+
+/** GET /conversations/:id — members only. Same 404 as the message routes. */
+export async function getConversation(env: Env, userId: string, conversationId: string): Promise<Conversation> {
+  await requireMember(env, conversationId, userId);
+  const conversation = await loadConversation(env, conversationId);
+  if (!conversation) throw new HttpError(404, "conversation not found");
+  return conversation;
+}
+
+/**
+ * POST /conversations/:id/members { userId }
+ * Adds one member to a group. Direct conversations stay pairs.
+ * v1 does not remove members. The client rotates its sender key after this.
+ */
+export async function addGroupMember(
+  env: Env,
+  userId: string,
+  conversationId: string,
+  body: unknown,
+): Promise<Conversation> {
+  const record = checkedBody(body);
+  const memberId = asUuid(record.userId, "userId");
+  if (memberId === userId) throw new HttpError(400, "cannot include yourself");
+  await requireMember(env, conversationId, userId);
+  const conversation = await loadConversation(env, conversationId);
+  if (!conversation) throw new HttpError(404, "conversation not found");
+  if (conversation.kind !== "group") throw new HttpError(400, "not a group");
+  if (conversation.members.some((member) => member.userId === memberId)) {
+    return conversation;
+  }
+  if (conversation.members.length >= MAX_GROUP_MEMBERS) throw new HttpError(400, "too many members");
+  const user = await env.DB.prepare("SELECT id FROM users WHERE id = ?").bind(memberId).first<{ id: string }>();
+  if (!user) throw new HttpError(404, "user not found");
+  const joinedAt = Date.now();
+  try {
+    await env.DB.prepare(
+      "INSERT INTO memberships (conversation_id, user_id, joined_at) VALUES (?, ?, ?)",
+    )
+      .bind(conversationId, memberId, joinedAt)
+      .run();
+  } catch (err) {
+    if (!isUniqueViolation(err)) throw err;
+  }
+  const updated = await loadConversation(env, conversationId);
+  if (!updated) throw new HttpError(404, "conversation not found");
+  return updated;
 }
 
 /** GET /conversations — memberships for the signed-in user. No message bodies. */
 export async function listConversations(env: Env, userId: string): Promise<Conversation[]> {
   const rows = await env.DB.prepare(
-    `SELECT c.id, c.created_at
+    `SELECT c.id, c.created_at, c.kind, c.title
      FROM conversations c
      INNER JOIN memberships mine ON mine.conversation_id = c.id AND mine.user_id = ?
      ORDER BY c.created_at DESC, c.id ASC`,
   )
     .bind(userId)
-    .all<{ id: string; created_at: number }>();
+    .all<ConversationRow>();
   if (rows.results.length === 0) return [];
 
   const ids = rows.results.map((row) => row.id);
@@ -207,6 +332,8 @@ export async function listConversations(env: Env, userId: string): Promise<Conve
   return rows.results.map((row) => ({
     id: row.id,
     createdAt: row.created_at,
+    kind: asKind(row.kind),
+    title: row.title,
     members: byConversation.get(row.id) ?? [],
   }));
 }

@@ -29,9 +29,9 @@ Use `encrypt_` (trailing underscore) in the native UI chrome — splash, nav wor
 
 - **X3DH** for initial key agreement, **Double Ratchet** for per-message forward secrecy
 - **Library:** `@open-e2ee/signal-protocol-sdk` (maintained pure-TypeScript X3DH / PQXDH + Double Ratchet on `@noble/*`). Do not hand-roll the ratchet. Private keys and 1:1 session records live in `expo-secure-store`. The Auth worker stores the public bundle only (`PUT /devices/:id/prekey-bundle`). `GET /users/:userId/prekey-bundle` is what the client uses to start a session. The worker does not publish the ML-KEM prekey, so those sessions use the SDK's classical X3DH path. The SDK's SQLCipher Expo store is not used, so this runs in Expo Go. A development build is required only if a later change adopts that SQLCipher store.
-- **1:1 sessions are client-side only.** `src/e2ee` establishes a session and encrypts or decrypts an opaque envelope. A conversation Durable Object fans that ciphertext out over WebSockets. Disappearing-message timers stay on the client and are copied onto `expireAt` at send. Group messaging is still a separate decision.
+- **1:1 sessions are client-side only.** `src/e2ee` establishes a session and encrypts or decrypts an opaque envelope. A conversation Durable Object fans that ciphertext out over WebSockets. Disappearing-message timers stay on the client and are copied onto `expireAt` at send.
+- **Group messaging (v1) is Signal Sender Keys**, using `@open-e2ee/signal-protocol-sdk` (`createGroupSenderKey`, `encryptGroupMessage`, `decryptGroupMessage`, `rotateGroupSenderKey`). Each sender distributes their sender key to the other members through the existing 1:1 sessions. The group message itself is one opaque ciphertext, fanned out by the conversation Durable Object. Sender-key state stays in Secure Store. MLS is not used.
 - Server sees and stores **ciphertext and minimal metadata only** — treat message body as opaque bytes in the schema from day one, not something to encrypt later
-- **Group messaging** is a separate, harder problem (Signal Sender Keys vs. MLS/OpenMLS) — not yet decided; see [Open decisions](#open-decisions)
 
 ### Backend — Cloudflare
 
@@ -40,7 +40,7 @@ Use `encrypt_` (trailing underscore) in the native UI chrome — splash, nav wor
 - **D1** (SQLite) for metadata/session data; move to Postgres via Hyperdrive if relational needs outgrow D1
 - **R2** for encrypted attachments/file blobs — server never has plaintext. Binding `ATTACHMENTS` stores AES-GCM ciphertext only. The Signal envelope (`attachment/v1`) wraps the content key and is sent on the existing message and WebSocket path.
 - **KV** for session tokens / rate limiting
-- Worker source: `workers/` (auth, public prekey bundles, ciphertext routes, R2 attachment blobs, and a Durable Object per 1:1 conversation for realtime). See `workers/README.md`.
+- Worker source: `workers/` (auth, public prekey bundles, ciphertext routes, R2 attachment blobs, and a Durable Object per conversation for realtime, including N-member groups). See `workers/README.md`.
 - Any marketing or web landing page → **Cloudflare Pages**. Static source is `pages/` (`npx wrangler pages deploy --cwd pages`). It does not share the API worker.
 
 ## Brand kit — BLACKOUT
@@ -75,5 +75,5 @@ Source: `/Users/hasnainrizvi/Downloads/BLACKOUT-brand-kit` (also exported as `BL
 
 ## Open decisions
 
-- **Group chat:** Signal Sender Keys vs. MLS (OpenMLS) — revisit once group messaging is actually in scope
+- **Group chat:** Sender Keys for v1. MLS is out of scope. The worker can create a group and add a member; it does not remove one. The sending device rotates its sender key when the member set changes.
 - Whether any part of the stack needs a **fallback off Workers** (Durable Objects have connection/CPU-time limits worth checking against expected message volume)

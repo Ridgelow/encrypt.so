@@ -5,7 +5,16 @@ import { loadGuardConfig } from "./guard";
 import { UserGate } from "./gate";
 import { errorResponse, HttpError, empty, json, readJson } from "./http";
 import { createDevice, getMe, getPrekeyBundle, putPrekeyBundle } from "./identity";
-import { createConversation, listConversations, listMessages, postMessage, requireMember } from "./messages";
+import {
+  addGroupMember,
+  createConversation,
+  createGroupConversation,
+  getConversation,
+  listConversations,
+  listMessages,
+  postMessage,
+  requireMember,
+} from "./messages";
 import { purgeExpired } from "./purge";
 import { notifyNewMessage, registerPushToken, unregisterPushToken } from "./push";
 import { ConversationRoom } from "./realtime";
@@ -100,6 +109,10 @@ function attachmentDeps(env: Env): AttachmentDeps {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+function isGroupCreate(body: unknown): boolean {
+  return typeof body === "object" && body !== null && !Array.isArray(body) && "memberUserIds" in body;
+}
+
 function pathOf(request: Request): string {
   const path = new URL(request.url).pathname.replace(/\/$/, "");
   return path || "/";
@@ -157,13 +170,40 @@ async function route(request: Request, env: Env, ctx: ExecutionContext): Promise
 
   if (method === "POST" && path === "/conversations") {
     const userId = await requireUser(request, env);
-    const result = await createConversation(env, userId, await readJson(request, maxBody));
+    const body = await readJson(request, maxBody);
+    if (isGroupCreate(body)) {
+      return json(await createGroupConversation(env, userId, body), 201);
+    }
+    const result = await createConversation(env, userId, body);
     return json(result.conversation, result.created ? 201 : 200);
   }
 
   if (method === "GET" && path === "/conversations") {
     const userId = await requireUser(request, env);
     return json({ conversations: await listConversations(env, userId) });
+  }
+
+  const membersPath = /^\/conversations\/([^/]+)\/members$/.exec(path);
+  if (membersPath) {
+    const conversationId = membersPath[1];
+    if (!UUID.test(conversationId)) throw new HttpError(404, "conversation not found");
+    const userId = await requireUser(request, env);
+    if (method === "GET") {
+      const conversation = await getConversation(env, userId, conversationId);
+      return json({ members: conversation.members });
+    }
+    if (method === "POST") {
+      const conversation = await addGroupMember(env, userId, conversationId, await readJson(request, maxBody));
+      return json(conversation);
+    }
+  }
+
+  const conversationPath = /^\/conversations\/([^/]+)$/.exec(path);
+  if (method === "GET" && conversationPath) {
+    const conversationId = conversationPath[1];
+    if (!UUID.test(conversationId)) throw new HttpError(404, "conversation not found");
+    const userId = await requireUser(request, env);
+    return json(await getConversation(env, userId, conversationId));
   }
 
   const messagesPath = /^\/conversations\/([^/]+)\/messages$/.exec(path);

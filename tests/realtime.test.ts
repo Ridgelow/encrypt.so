@@ -98,6 +98,8 @@ function messagingMock(handlers?: {
         return {
           id: CONVO,
           createdAt: 1,
+          kind: "direct" as const,
+          title: null,
           members: [
             { userId: ALICE, joinedAt: 1 },
             { userId: BOB, joinedAt: 1 },
