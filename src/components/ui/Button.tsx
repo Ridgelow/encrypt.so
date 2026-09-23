@@ -4,17 +4,17 @@ import {
   View,
   StyleSheet,
   type PressableProps,
+  type StyleProp,
   type ViewStyle,
 } from "react-native";
-import { colors } from "@/theme/tokens";
-import { labelOnWhite, typography } from "@/theme/typography";
+import { colors, fonts } from "@/theme/tokens";
 
 type Variant = "primary" | "ghost" | "outline";
 
 type Props = PressableProps & {
   label: string;
   variant?: Variant;
-  style?: ViewStyle;
+  style?: StyleProp<ViewStyle>;
 };
 
 export function Button({ label, variant = "primary", style, disabled, ...rest }: Props) {
@@ -24,28 +24,33 @@ export function Button({ label, variant = "primary", style, disabled, ...rest }:
   return (
     <Pressable
       accessibilityRole="button"
+      accessibilityLabel={label}
       disabled={disabled}
       style={({ pressed }) => [
-        styles.base,
-        isPrimary && styles.primary,
-        isOutline && styles.outline,
-        variant === "ghost" && styles.ghost,
-        pressed && styles.pressed,
-        disabled && styles.disabled,
+        { width: "100%" },
+        (pressed || disabled) && { opacity: disabled ? 0.4 : 0.85 },
         style,
       ]}
       {...rest}
     >
-      <Text
+      {/* Inner View owns the fill — NativeWind often drops Pressable backgroundColor on iOS */}
+      <View
         style={[
-          typography.label,
-          { fontSize: 12 },
-          isPrimary ? { color: colors.black } : { color: colors.smoke },
-          isOutline && { color: colors.smoke },
+          styles.face,
+          isPrimary && styles.facePrimary,
+          isOutline && styles.faceOutline,
+          variant === "ghost" && styles.faceGhost,
         ]}
       >
-        {label}
-      </Text>
+        <Text
+          style={[
+            styles.label,
+            isPrimary ? styles.labelOnPrimary : styles.labelMuted,
+          ]}
+        >
+          {label}
+        </Text>
+      </View>
     </Pressable>
   );
 }
@@ -54,7 +59,7 @@ export function CheckBox({ checked }: { checked: boolean }) {
   return (
     <View style={[styles.check, checked && styles.checkOn]}>
       {checked ? (
-        <Text style={{ color: colors.black, fontSize: 12, fontFamily: "PixelOperatorMono" }}>✓</Text>
+        <Text style={{ color: colors.black, fontSize: 12, fontFamily: fonts.mono }}>✓</Text>
       ) : null}
     </View>
   );
@@ -69,27 +74,36 @@ export function InvertedCheck({ size = 18 }: { size?: number }) {
 }
 
 const styles = StyleSheet.create({
-  base: {
+  face: {
+    minHeight: 48,
     height: 48,
+    width: "100%",
     alignItems: "center",
     justifyContent: "center",
   },
-  primary: {
-    backgroundColor: colors.white,
+  facePrimary: {
+    backgroundColor: "#ffffff",
   },
-  outline: {
-    backgroundColor: "transparent",
+  faceOutline: {
+    backgroundColor: "#000000",
     borderWidth: 1,
-    borderColor: colors.rule,
+    borderColor: "#2e2e34",
   },
-  ghost: {
+  faceGhost: {
     backgroundColor: "transparent",
   },
-  pressed: {
-    opacity: 0.85,
+  label: {
+    fontSize: 13,
+    letterSpacing: 1.6,
+    textTransform: "uppercase",
+    fontWeight: "600",
+    fontFamily: fonts.sansMedium,
   },
-  disabled: {
-    opacity: 0.4,
+  labelOnPrimary: {
+    color: "#000000",
+  },
+  labelMuted: {
+    color: "#9a9aa2",
   },
   check: {
     width: 22,
@@ -100,11 +114,11 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   checkOn: {
-    backgroundColor: colors.white,
-    borderColor: colors.white,
+    backgroundColor: "#ffffff",
+    borderColor: "#ffffff",
   },
   invertedCheck: {
-    backgroundColor: colors.white,
+    backgroundColor: "#ffffff",
     alignItems: "center",
     justifyContent: "center",
   },
@@ -113,9 +127,7 @@ const styles = StyleSheet.create({
     height: 4,
     borderLeftWidth: 2,
     borderBottomWidth: 2,
-    borderColor: colors.black,
+    borderColor: "#000000",
     transform: [{ rotate: "-45deg" }, { translateY: -1 }],
   },
 });
-
-export { labelOnWhite };

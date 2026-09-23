@@ -8,6 +8,8 @@ export type ChatPreview = {
   unread?: number;
   locked?: boolean;
   disappearing?: boolean;
+  /** Live peer / group id when this row is backed by the worker. */
+  userId?: string;
 };
 
 export type Contact = {

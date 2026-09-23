@@ -355,6 +355,7 @@ export function createAuthClient(options: AuthClientOptions): AuthClient {
         method: "PUT",
         token,
         body: bundle,
+        timeoutMs: 30_000,
       });
     },
     getPrekeyBundle(token, userId) {

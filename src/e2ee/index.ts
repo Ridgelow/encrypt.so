@@ -1,4 +1,5 @@
 import { createAuthClient, isApiConfigured } from "@/services/api";
+import { ApiError } from "@/services/errors";
 import { loadSession } from "@/services/session";
 import { DeviceKeyStoreUnavailableError, SessionUnavailableError } from "./errors";
 import { createExpoKeyValueStore, isDeviceKeyStoreAvailable } from "./expo-key-store";
@@ -59,16 +60,24 @@ export type { GroupDistributionPayload, GroupSenderPayload } from "./group-wire"
 export type { SafetyFingerprint, VerifiedPeer } from "./safety";
 export { verificationMatches } from "./safety";
 
+export type PublishStatus = {
+  ready: boolean;
+  uploaded: boolean;
+  detail: string;
+};
+
 function liveApi(origin: string): IdentityApi {
   const client = createAuthClient({ baseUrl: origin });
   return {
     createDevice: (token, name) => client.createDevice(token, name),
-    putPrekeyBundle: (token, deviceId, bundle) => client.putPrekeyBundle(token, deviceId, bundle),
+    putPrekeyBundle: (token, deviceId, bundle) =>
+      client.putPrekeyBundle(token, deviceId, bundle),
   };
 }
 
 let store: KeyValueStore | null = null;
 let inflight: Promise<ProvisionResult> | null = null;
+let publishInflight: Promise<PublishStatus> | null = null;
 
 function deviceStore(): KeyValueStore {
   if (!store) store = createChunkedStore(createExpoKeyValueStore());
@@ -111,6 +120,56 @@ async function run(options?: { republish?: boolean }): Promise<ProvisionResult> 
   });
 }
 
+/**
+ * Make sure this install has a public prekey bundle on the worker.
+ * Call on Messages focus and before starting a live chat. Verifies via GET /me.
+ */
+export async function ensurePublishedKeys(): Promise<PublishStatus> {
+  if (publishInflight) return publishInflight;
+  publishInflight = (async (): Promise<PublishStatus> => {
+    const origin = apiOrigin();
+    const session = await loadSession();
+    if (!origin || !session) {
+      return { ready: false, uploaded: false, detail: "Sign in to publish encryption keys." };
+    }
+    try {
+      const client = createAuthClient({ baseUrl: origin });
+      const me = await client.getMe(session.sessionToken);
+      const live = me.devices.some((device) => Boolean(device.identityKey));
+      const result = await provisionDeviceKeys({ republish: !live });
+      if (!live) {
+        const again = await client.getMe(session.sessionToken);
+        const confirmed = again.devices.some((device) => Boolean(device.identityKey));
+        if (!confirmed) {
+          return {
+            ready: false,
+            uploaded: false,
+            detail: "Key upload did not stick — check the network and tap to retry.",
+          };
+        }
+        return { ready: true, uploaded: true, detail: "Keys ready" };
+      }
+      return {
+        ready: true,
+        uploaded: result.uploaded || Boolean(result.serverDeviceId),
+        detail: "Keys ready",
+      };
+    } catch (error) {
+      const detail =
+        error instanceof ApiError
+          ? error.message
+          : error instanceof Error
+            ? error.message
+            : "Could not publish keys";
+      console.warn("[encrypt] ensurePublishedKeys", detail);
+      return { ready: false, uploaded: false, detail };
+    }
+  })().finally(() => {
+    publishInflight = null;
+  });
+  return publishInflight;
+}
+
 async function readyStore(): Promise<{ store: KeyValueStore; localUserId: string; sessionToken: string }> {
   if (!(await isDeviceKeyStoreAvailable())) throw new DeviceKeyStoreUnavailableError();
   const session = await loadSession();
@@ -128,6 +187,7 @@ export async function ensureSessionWithUser(peerUserId: string): Promise<Establi
   if (existing) return existing;
   const origin = apiOrigin();
   if (!origin) throw new SessionUnavailableError();
+  await ensurePublishedKeys();
   const client = createAuthClient({ baseUrl: origin });
   return ensureSessionWithUserWith({
     store: ready.store,

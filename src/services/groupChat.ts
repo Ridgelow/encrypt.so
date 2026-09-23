@@ -22,6 +22,7 @@ import {
   type ServerFrame,
 } from "@/services/realtime";
 import type { LiveThreadMessage } from "@/services/liveChat";
+import { newClientId } from "@/lib/id";
 
 export type GroupPublishOptions = {
   expireAt?: number | null;
@@ -99,7 +100,7 @@ export async function distributeSenderKey(input: {
   const prepared = await prepareGroupSenderKey(input.groupId, input.memberUserIds);
   let senderDeviceId: string | undefined;
   for (const envelope of prepared.envelopes) {
-    const clientId = crypto.randomUUID();
+    const clientId = newClientId();
     const ciphertext = senderKeyDistributionCiphertext(input.groupId, LOCAL_PROTOCOL_DEVICE_ID, envelope);
     senderDeviceId = senderDeviceIdOf(envelope.senderDeviceId);
     if (input.send) await input.send(ciphertext, SENDER_KEY_DIST_CONTENT_TYPE, clientId, senderDeviceId);
@@ -309,7 +310,7 @@ export async function openGroupChat(options: {
     memberUserIds,
     history,
     async publish(plaintext, publishOptions) {
-      const clientId = crypto.randomUUID();
+      const clientId = newClientId();
       const expireAt = typeof publishOptions?.expireAt === "number" ? publishOptions.expireAt : undefined;
       const createdAt = publishOptions?.createdAt ?? Date.now();
       let members = memberUserIds;

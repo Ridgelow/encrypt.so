@@ -79,7 +79,7 @@ export async function ensureDeviceKeys(input: EnsureDeviceKeysInput): Promise<Pr
   if (!serverDeviceId) {
     const device = await api.createDevice(session.sessionToken, PRIMARY_DEVICE_NAME);
     serverDeviceId = device.id;
-    record = { ...record, serverDeviceId };
+    record = { ...record, serverDeviceId, publishedTo: null };
     await writeRecord(input.store, record);
   }
 
@@ -88,8 +88,23 @@ export async function ensureDeviceKeys(input: EnsureDeviceKeysInput): Promise<Pr
     return { created, uploaded: false, serverDeviceId, bundle };
   }
 
-  await api.putPrekeyBundle(session.sessionToken, serverDeviceId, bundle);
-  record = { ...record, publishedTo: origin };
+  try {
+    await api.putPrekeyBundle(session.sessionToken, serverDeviceId, bundle);
+  } catch (error) {
+    const status =
+      error && typeof error === "object" && "status" in error && typeof (error as { status: unknown }).status === "number"
+        ? (error as { status: number }).status
+        : null;
+    // Stale device id after re-login (or wiped D1 row) — register a fresh device and retry once.
+    if (status !== 404) throw error;
+    const device = await api.createDevice(session.sessionToken, PRIMARY_DEVICE_NAME);
+    serverDeviceId = device.id;
+    record = { ...record, serverDeviceId, publishedTo: null };
+    await writeRecord(input.store, record);
+    await api.putPrekeyBundle(session.sessionToken, serverDeviceId, bundle);
+  }
+
+  record = { ...record, publishedTo: origin, serverDeviceId };
   await writeRecord(input.store, record);
   return { created, uploaded: true, serverDeviceId, bundle };
 }

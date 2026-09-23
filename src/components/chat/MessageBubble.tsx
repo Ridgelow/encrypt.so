@@ -1,4 +1,6 @@
 import { Image, Pressable, Text, TextInput, View, StyleSheet } from "react-native";
+import type { ReactNode } from "react";
+import Animated, { FadeInDown, FadeInLeft, FadeInRight } from "react-native-reanimated";
 import {
   IconAttach,
   IconClock,
@@ -12,64 +14,93 @@ import type { Message } from "@/data/mock";
 import { colors } from "@/theme/tokens";
 import { typography } from "@/theme/typography";
 
-export function MessageBubble({ message }: { message: Message }) {
+function Appear({
+  animate,
+  mine,
+  children,
+}: {
+  animate?: boolean;
+  mine?: boolean;
+  children: ReactNode;
+}) {
+  if (!animate) return <>{children}</>;
+  const entering = mine
+    ? FadeInRight.duration(220).springify().damping(17).stiffness(210)
+    : FadeInLeft.duration(220).springify().damping(17).stiffness(210);
+  return <Animated.View entering={entering}>{children}</Animated.View>;
+}
+
+export function MessageBubble({ message, animate }: { message: Message; animate?: boolean }) {
   if (message.kind === "system") {
-    if (message.text.includes("end-to-end")) {
-      return (
+    const body =
+      message.text.includes("end-to-end") ? (
         <View style={styles.banner}>
           <IconLock size={15} />
           <Text style={[typography.label, { fontSize: 9.5 }]}>{message.text}</Text>
         </View>
+      ) : (
+        <Text style={[typography.mono, styles.systemLine]}>{message.text}</Text>
       );
-    }
-    return <Text style={[typography.mono, styles.systemLine]}>{message.text}</Text>;
+    if (!animate) return body;
+    return <Animated.View entering={FadeInDown.duration(200)}>{body}</Animated.View>;
   }
 
   const mine = message.from === "me";
 
   if (message.kind === "image") {
     return (
-      <View style={[styles.row, mine && styles.rowMine]}>
-        <View>
-          {message.uri ? (
-            <Image source={{ uri: message.uri }} style={styles.imagePlaceholder} resizeMode="cover" accessibilityLabel="Photo" />
-          ) : (
-            <View style={styles.imagePlaceholder}>
-              <IconImage />
-            </View>
-          )}
-          {message.time ? (
-            <Text style={[typography.mono, styles.meta, mine && styles.metaMine]}>
-              {message.time}
-              {message.receipts ? ` ${message.receipts}` : ""}
-            </Text>
-          ) : null}
-        </View>
-      </View>
-    );
-  }
-
-  if (message.kind === "file") {
-    return (
-      <View style={[styles.row, mine && styles.rowMine]}>
-        <View style={styles.fileBubble}>
-          <View style={styles.fileIcon}>
-            <IconFile size={22} />
-          </View>
+      <Appear animate={animate} mine={mine}>
+        <View style={[styles.row, mine && styles.rowMine]}>
           <View>
-            <Text style={[typography.body, { fontSize: 13.5, color: colors.chalk }]}>{message.name}</Text>
-            {message.size ? (
-              <Text style={[typography.mono, { fontSize: 10, color: colors.ghost, marginTop: 2 }]}>{message.size}</Text>
-            ) : null}
-            {message.time || message.receipts ? (
-              <Text style={[typography.mono, { fontSize: 10, color: colors.ghost, marginTop: 2 }]}>
-                {message.time ?? ""}
+            {message.uri ? (
+              <Image
+                source={{ uri: message.uri }}
+                style={styles.imagePlaceholder}
+                resizeMode="cover"
+                accessibilityLabel="Photo"
+              />
+            ) : (
+              <View style={styles.imagePlaceholder}>
+                <IconImage />
+              </View>
+            )}
+            {message.time ? (
+              <Text style={[typography.mono, styles.meta, mine && styles.metaMine]}>
+                {message.time}
                 {message.receipts ? ` ${message.receipts}` : ""}
               </Text>
             ) : null}
           </View>
         </View>
-      </View>
+      </Appear>
+    );
+  }
+
+  if (message.kind === "file") {
+    return (
+      <Appear animate={animate} mine={mine}>
+        <View style={[styles.row, mine && styles.rowMine]}>
+          <View style={styles.fileBubble}>
+            <View style={styles.fileIcon}>
+              <IconFile size={22} />
+            </View>
+            <View>
+              <Text style={[typography.body, { fontSize: 13.5, color: colors.chalk }]}>{message.name}</Text>
+              {message.size ? (
+                <Text style={[typography.mono, { fontSize: 10, color: colors.ghost, marginTop: 2 }]}>
+                  {message.size}
+                </Text>
+              ) : null}
+              {message.time || message.receipts ? (
+                <Text style={[typography.mono, { fontSize: 10, color: colors.ghost, marginTop: 2 }]}>
+                  {message.time ?? ""}
+                  {message.receipts ? ` ${message.receipts}` : ""}
+                </Text>
+              ) : null}
+            </View>
+          </View>
+        </View>
+      </Appear>
     );
   }
 
@@ -88,17 +119,23 @@ export function MessageBubble({ message }: { message: Message }) {
 
   if (message.sender) {
     return (
-      <View style={[styles.row, styles.groupRow]}>
-        <Avatar initials={message.senderInitials} size={28} />
-        <View style={{ flexShrink: 1 }}>
-          <Text style={[typography.mono, styles.sender]}>{message.sender}</Text>
-          {bubble}
+      <Appear animate={animate} mine={false}>
+        <View style={[styles.row, styles.groupRow]}>
+          <Avatar initials={message.senderInitials} size={28} />
+          <View style={{ flexShrink: 1 }}>
+            <Text style={[typography.mono, styles.sender]}>{message.sender}</Text>
+            {bubble}
+          </View>
         </View>
-      </View>
+      </Appear>
     );
   }
 
-  return <View style={[styles.row, mine && styles.rowMine]}>{bubble}</View>;
+  return (
+    <Appear animate={animate} mine={mine}>
+      <View style={[styles.row, mine && styles.rowMine]}>{bubble}</View>
+    </Appear>
+  );
 }
 
 export function ChatComposer({

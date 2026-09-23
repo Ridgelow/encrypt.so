@@ -1,11 +1,21 @@
 import { useState } from "react";
-import { Pressable, Text, TextInput, View, StyleSheet } from "react-native";
+import {
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  ScrollView,
+  Text,
+  TextInput,
+  View,
+  StyleSheet,
+} from "react-native";
 import { router } from "expo-router";
 import { IconCamera, IconPlus } from "@/components/icons";
 import { Button } from "@/components/ui/Button";
 import { Caret } from "@/components/ui/Caret";
 import { Screen } from "@/components/ui/Screen";
 import { ScreenHeader } from "@/components/ui/ScreenHeader";
+import { saveDisplayName } from "@/services/profile";
 import { colors } from "@/theme/tokens";
 import { typography } from "@/theme/typography";
 
@@ -13,57 +23,78 @@ export default function ProfileSetupScreen() {
   const [name, setName] = useState("");
   const [about, setAbout] = useState("");
 
+  async function finish() {
+    await saveDisplayName(name);
+    router.dismissAll();
+    router.replace("/chats");
+  }
+
   return (
     <Screen>
-      <ScreenHeader />
-      <View style={styles.body}>
-        <Text style={[typography.display, { fontSize: 24 }]}>Set up your profile</Text>
-        <Text style={[typography.body, styles.help]}>
-          This is what contacts see. It's never shared with anyone outside your conversations.
-        </Text>
-        <View style={styles.avatarWrap}>
-          <View style={styles.avatar}>
-            <IconCamera size={22} />
+      <KeyboardAvoidingView
+        style={styles.flex}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        keyboardVerticalOffset={8}
+      >
+        <ScreenHeader />
+        <ScrollView
+          contentContainerStyle={styles.body}
+          keyboardShouldPersistTaps="handled"
+          bounces={false}
+        >
+          <Text style={[typography.display, { fontSize: 24 }]}>Set up your profile</Text>
+          <Text style={[typography.body, styles.help]}>
+            This is what contacts see. It's never shared with anyone outside your conversations.
+          </Text>
+          <View style={styles.avatarWrap}>
+            <View style={styles.avatar}>
+              <IconCamera size={22} />
+            </View>
+            <Pressable style={styles.plus} accessibilityLabel="Add photo">
+              <IconPlus size={20} color={colors.black} />
+            </Pressable>
           </View>
-          <Pressable style={styles.plus} accessibilityLabel="Add photo">
-            <IconPlus size={20} color={colors.black} />
-          </Pressable>
-        </View>
-        <Text style={[typography.label, { fontSize: 10 }]}>Display name</Text>
-        <View style={[styles.field, styles.fieldLive]}>
-          <TextInput
-            value={name}
-            onChangeText={setName}
-            placeholder="Your name"
-            placeholderTextColor={colors.steel}
-            style={[typography.mono, styles.input]}
-            autoFocus
-          />
-          {!name ? <Caret /> : null}
-        </View>
-        <Text style={[typography.label, { fontSize: 10, marginTop: 18 }]}>About (optional)</Text>
-        <View style={styles.field}>
-          <TextInput
-            value={about}
-            onChangeText={setAbout}
-            placeholder="Short status"
-            placeholderTextColor={colors.steel}
-            style={[typography.mono, styles.input]}
-          />
-        </View>
-      </View>
-      <View style={styles.footer}>
-        <Button label="Continue" onPress={() => router.replace("/chats")} />
-      </View>
+          <Text style={[typography.label, { fontSize: 10 }]}>Display name</Text>
+          <View style={[styles.field, styles.fieldLive]}>
+            <TextInput
+              value={name}
+              onChangeText={setName}
+              placeholder="Your name"
+              placeholderTextColor={colors.steel}
+              style={[typography.mono, styles.input]}
+              autoFocus
+              returnKeyType="next"
+            />
+            {!name ? <Caret /> : null}
+          </View>
+          <Text style={[typography.label, { fontSize: 10, marginTop: 18 }]}>About (optional)</Text>
+          <View style={styles.field}>
+            <TextInput
+              value={about}
+              onChangeText={setAbout}
+              placeholder="Short status"
+              placeholderTextColor={colors.steel}
+              style={[typography.mono, styles.input]}
+              returnKeyType="done"
+              onSubmitEditing={() => void finish()}
+            />
+          </View>
+          <View style={styles.action}>
+            <Button label="Continue" onPress={() => void finish()} />
+          </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
+  flex: { flex: 1 },
   body: {
-    flex: 1,
+    flexGrow: 1,
     paddingHorizontal: 22,
     paddingTop: 24,
+    paddingBottom: 24,
   },
   help: {
     fontSize: 13.5,
@@ -113,8 +144,7 @@ const styles = StyleSheet.create({
     color: colors.chalk,
     padding: 0,
   },
-  footer: {
-    paddingHorizontal: 22,
-    paddingBottom: 16,
+  action: {
+    marginTop: 28,
   },
 });

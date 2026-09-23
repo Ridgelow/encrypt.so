@@ -1,22 +1,46 @@
-import { useState } from "react";
-import { Text, TextInput, View, StyleSheet } from "react-native";
+import { useEffect, useState } from "react";
+import {
+  Keyboard,
+  Platform,
+  Text,
+  TextInput,
+  View,
+  StyleSheet,
+} from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { Button } from "@/components/ui/Button";
 import { Caret } from "@/components/ui/Caret";
-import { Screen } from "@/components/ui/Screen";
-import { ScreenHeader } from "@/components/ui/ScreenHeader";
 import { isApiConfigured, startPhoneAuth, toE164 } from "@/services/api";
 import { ApiError, isApiUnavailable } from "@/services/errors";
 import { colors } from "@/theme/tokens";
 import { typography } from "@/theme/typography";
 
 export default function PhoneEntryScreen() {
+  const insets = useSafeAreaInsets();
   const [phone, setPhone] = useState("");
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+
+  useEffect(() => {
+    const show = Keyboard.addListener(
+      Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow",
+      (e) => setKeyboardHeight(e.endCoordinates.height),
+    );
+    const hide = Keyboard.addListener(
+      Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide",
+      () => setKeyboardHeight(0),
+    );
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, []);
 
   async function onContinue() {
     if (busy) return;
+    Keyboard.dismiss();
     const shown = phone.trim() || "(555) 010-0192";
     const e164 = toE164(shown);
     if (!isApiConfigured() || !e164) {
@@ -40,10 +64,11 @@ export default function PhoneEntryScreen() {
     }
   }
 
+  const footerOffset = keyboardHeight > 0 ? keyboardHeight : Math.max(insets.bottom, 12);
+
   return (
-    <Screen>
-      <ScreenHeader />
-      <View style={styles.body}>
+    <View style={styles.root}>
+      <View style={[styles.body, { paddingTop: insets.top + 24, paddingBottom: 88 }]}>
         <Text style={[typography.display, { fontSize: 24 }]}>Your number</Text>
         <Text style={[typography.body, styles.help]}>
           We'll text you a code to verify it's you. Your number is never shown to other users.
@@ -57,7 +82,7 @@ export default function PhoneEntryScreen() {
               value={phone}
               onChangeText={setPhone}
               keyboardType="phone-pad"
-              placeholder="Phone number"
+              placeholder="5550100001"
               placeholderTextColor={colors.steel}
               style={[typography.mono, styles.input]}
               autoFocus
@@ -67,18 +92,23 @@ export default function PhoneEntryScreen() {
         </View>
         {note ? <Text style={[typography.mono, styles.note]}>{note}</Text> : null}
       </View>
-      <View style={styles.footer}>
-        <Button label="Continue" disabled={busy} onPress={() => void onContinue()} />
+
+      {/* Sticky above the phone pad — always visible on device */}
+      <View style={[styles.footer, { bottom: footerOffset }]}>
+        <Button label={busy ? "…" : "Continue"} disabled={busy} onPress={() => void onContinue()} />
       </View>
-    </Screen>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  root: {
+    flex: 1,
+    backgroundColor: colors.black,
+  },
   body: {
     flex: 1,
     paddingHorizontal: 22,
-    paddingTop: 28,
   },
   help: {
     fontSize: 13.5,
@@ -122,7 +152,14 @@ const styles = StyleSheet.create({
     marginTop: 14,
   },
   footer: {
+    position: "absolute",
+    left: 0,
+    right: 0,
     paddingHorizontal: 22,
-    paddingBottom: 16,
+    paddingTop: 12,
+    paddingBottom: 12,
+    backgroundColor: colors.black,
+    borderTopWidth: 1,
+    borderTopColor: colors.rule,
   },
 });

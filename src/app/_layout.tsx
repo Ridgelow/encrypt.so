@@ -41,14 +41,36 @@ export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: colors.black }}>
       <SafeAreaProvider>
-        <StatusBar style="light" />
-        <Stack
-          screenOptions={{
-            headerShown: false,
-            contentStyle: { backgroundColor: colors.black },
-            animation: "fade",
-          }}
-        />
+        <View style={{ flex: 1, backgroundColor: colors.black }}>
+          <StatusBar style="light" />
+          <Stack
+            screenOptions={{
+              headerShown: false,
+              contentStyle: { backgroundColor: colors.black },
+              // No white edge/shadow under the swipe-back gesture
+              animation: "simple_push",
+              gestureEnabled: true,
+              fullScreenGestureEnabled: true,
+              fullScreenGestureShadowEnabled: false,
+            }}
+          >
+            {/* Messages is the app root after onboarding — no swipe-back into auth. */}
+            <Stack.Screen
+              name="chats"
+              options={{
+                gestureEnabled: false,
+                fullScreenGestureEnabled: false,
+                animation: "none",
+              }}
+            />
+            <Stack.Screen name="index" options={{ gestureEnabled: false, fullScreenGestureEnabled: false }} />
+            <Stack.Screen name="welcome" options={{ gestureEnabled: false, fullScreenGestureEnabled: false }} />
+            <Stack.Screen name="phone" options={{ gestureEnabled: false, fullScreenGestureEnabled: false }} />
+            <Stack.Screen name="verify" options={{ gestureEnabled: false, fullScreenGestureEnabled: false }} />
+            <Stack.Screen name="keygen" options={{ gestureEnabled: false, fullScreenGestureEnabled: false }} />
+            <Stack.Screen name="profile" options={{ gestureEnabled: false, fullScreenGestureEnabled: false }} />
+          </Stack>
+        </View>
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );

@@ -11,6 +11,7 @@ import {
   type RealtimeTransportFactory,
   type ServerFrame,
 } from "@/services/realtime";
+import { newClientId } from "@/lib/id";
 
 export type LiveThreadMessage = {
   id: string;
@@ -284,7 +285,7 @@ export async function openLiveChat(options: {
     conversationId: conversation.id,
     history,
     async publish(envelope, plaintext, publishOptions) {
-      const clientId = crypto.randomUUID();
+      const clientId = newClientId();
       const ciphertext = encodeOpaqueEnvelope(envelope);
       const senderDeviceId = isDeviceUuid(envelope.senderDeviceId) ? envelope.senderDeviceId : undefined;
       const expireAt = typeof publishOptions?.expireAt === "number" ? publishOptions.expireAt : undefined;

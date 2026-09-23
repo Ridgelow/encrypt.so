@@ -1,15 +1,24 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Pressable, ScrollView, Text, StyleSheet } from "react-native";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  FlatList,
+  Keyboard,
+  Platform,
+  Pressable,
+  Text,
+  StyleSheet,
+  View,
+} from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router, useLocalSearchParams } from "expo-router";
 import { ChatComposer, MessageBubble } from "@/components/chat/MessageBubble";
 import { AttachmentSheet, DisappearingTimerSheet, type AttachmentPick } from "@/components/chat/Sheets";
 import { IconLock, IconPeople } from "@/components/icons";
-import { Screen } from "@/components/ui/Screen";
 import { ScreenHeader } from "@/components/ui/ScreenHeader";
 import { chats, groupThread, samThread, type Message } from "@/data/mock";
 import {
   decryptFromPeer,
   encryptForPeer,
+  ensurePublishedKeys,
   ensureSessionWithUser,
   isPeerUserId,
   type OpaqueEnvelope,
@@ -18,6 +27,8 @@ import { ATTACHMENT_CONTENT_TYPE, bytesToBase64, formatByteSize, openDecryptedAt
 import { configuredApiOrigin, createMessagingClient, isApiConfigured, type CiphertextMessage } from "@/services/api";
 import { stageEncryptedAttachment } from "@/services/attachments";
 import { postBodyForEnvelope, readOpaqueCiphertext, sendDisappearingCiphertext } from "@/services/ciphertext";
+import { peerDisplayName, rememberPeerName, shortUserId } from "@/services/contacts";
+import { inboxConversationId, touchGroupThread, touchInboxThread } from "@/services/inbox";
 import {
   expireAtForChoice,
   isExpired,
@@ -28,13 +39,19 @@ import {
 } from "@/services/disappear";
 import { liveGroupEnabled, openGroupChat, type GroupChat } from "@/services/groupChat";
 import { liveChatEnabled, openLiveChat, type LiveChat, type LiveThreadMessage } from "@/services/liveChat";
-import { openSecureMessageCache } from "@/services/messageCache";
+import { openSecureMessageCache, type CachedMessage } from "@/services/messageCache";
 import { pickAttachment, type PickedAttachment } from "@/services/pickAttachment";
 import { loadSession } from "@/services/session";
+import { newClientId } from "@/lib/id";
 import { colors } from "@/theme/tokens";
 import { typography } from "@/theme/typography";
 
 type ThreadItem = Message & { envelope?: OpaqueEnvelope; sealed?: boolean; contentType?: string };
+
+function sendFailureLine(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  return "Could not deliver — message stayed on this device";
+}
 
 function firstParam(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
@@ -46,10 +63,7 @@ function clock(at = Date.now()): string {
 }
 
 function clientId(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  return `local-${Date.now()}`;
+  return newClientId();
 }
 
 function toThread(item: LiveThreadMessage): ThreadItem {
@@ -84,6 +98,64 @@ function toThread(item: LiveThreadMessage): ThreadItem {
         }
       : {}),
   };
+}
+
+function cachedToThread(row: CachedMessage): ThreadItem | null {
+  if (isExpired(row.expireAt ?? null)) return null;
+  if (row.contentType === ATTACHMENT_CONTENT_TYPE) {
+    const label =
+      row.plaintext && !row.plaintext.includes('"key"') ? row.plaintext : "Encrypted attachment";
+    return {
+      id: row.id,
+      kind: "file",
+      from: row.from ?? "me",
+      name: label,
+      size: "",
+      time: clock(row.createdAt),
+      receipts: (row.from ?? "me") === "me" ? "✓✓" : undefined,
+      expireAt: row.expireAt,
+      contentType: ATTACHMENT_CONTENT_TYPE,
+    };
+  }
+  return {
+    id: row.id,
+    kind: "text",
+    from: row.from ?? "me",
+    text: row.plaintext,
+    time: clock(row.createdAt),
+    receipts: (row.from ?? "me") === "me" ? "✓✓" : undefined,
+    ...(row.expireAt != null ? { expireAt: row.expireAt } : {}),
+  };
+}
+
+/** Instant open: show on-device plaintext without waiting on the network. */
+async function hydrateFromCache(conversationKeys: string[]): Promise<ThreadItem[]> {
+  const unique = [...new Set(conversationKeys.filter(Boolean))];
+  if (unique.length === 0) return [];
+  const cache = await openSecureMessageCache().catch(() => null);
+  if (!cache) return [];
+  try {
+    await cache.purgeExpired();
+  } catch {
+    // Still try to read.
+  }
+  const seen = new Set<string>();
+  const rows: CachedMessage[] = [];
+  for (const key of unique) {
+    const listed = await cache.list(key).catch(() => []);
+    for (const row of listed) {
+      if (seen.has(row.id)) continue;
+      seen.add(row.id);
+      rows.push(row);
+    }
+  }
+  rows.sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+  const items: ThreadItem[] = [];
+  for (const row of rows) {
+    const item = cachedToThread(row);
+    if (item) items.push(item);
+  }
+  return items;
 }
 
 function localAttachment(picked: PickedAttachment, id: string, receipts: string, expireAt: number | null): ThreadItem {
@@ -186,19 +258,48 @@ async function loadHttpThread(input: {
 }
 
 export default function ConversationScreen() {
+  const insets = useSafeAreaInsets();
   const params = useLocalSearchParams<{ id: string; name?: string; group?: string; userId?: string }>();
   const id = firstParam(params.id);
   const name = firstParam(params.name);
   const group = firstParam(params.group);
   const userId = firstParam(params.userId);
   const isGroup = group === "1" || id === "design-crit" || id === "hackrice";
-  const title = name ?? (isGroup ? "Design Crit" : "Sam");
-  const liveGroupId = isGroup && isPeerUserId(id) ? id : null;
   const peerUserId = isGroup ? null : isPeerUserId(userId) ? userId : isPeerUserId(id) ? id : null;
+  const liveGroupId = isGroup && isPeerUserId(id) ? id : null;
   const chat = chats.find((item) => item.id === id);
+  const [title, setTitle] = useState(
+    () => name ?? (isGroup ? chat?.name ?? "Group" : peerUserId ? shortUserId(peerUserId) : chat?.name ?? "Chat"),
+  );
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      if (name && name.toLowerCase() !== "peer" && peerUserId) {
+        await rememberPeerName(peerUserId, name);
+      }
+      if (peerUserId) {
+        const label = await peerDisplayName(peerUserId, name);
+        if (!cancelled) setTitle(label);
+        void touchInboxThread({ peerUserId, name: label, preview: "End-to-end encrypted" });
+        return;
+      }
+      if (liveGroupId) {
+        void touchGroupThread({ groupId: liveGroupId, title: name });
+      }
+      if (!cancelled) {
+        setTitle(name ?? (isGroup ? chat?.name ?? "Group" : chat?.name ?? "Chat"));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [chat?.name, isGroup, liveGroupId, name, peerUserId]);
 
   const [messages, setMessages] = useState<ThreadItem[]>(() => openingThread(isGroup, peerUserId, Boolean(liveGroupId)));
   const [memberCount, setMemberCount] = useState<number | null>(null);
+  const [animateIds, setAnimateIds] = useState(() => new Set<string>());
   const liveRef = useRef<Promise<LiveChat | null>>(Promise.resolve(null));
   const groupRef = useRef<Promise<GroupChat | null>>(Promise.resolve(null));
   const [draft, setDraft] = useState("");
@@ -211,6 +312,18 @@ export default function ConversationScreen() {
   const openingAttachments = useRef(new Set<string>());
   const openedAttachments = useRef(new Map<string, ThreadItem>());
   const chatKeyRef = useRef("");
+  const animateIdsRef = useRef(animateIds);
+  animateIdsRef.current = animateIds;
+  const entranceReadyRef = useRef(false);
+
+  function markAnimated(id: string) {
+    setAnimateIds((current) => {
+      if (current.has(id)) return current;
+      const next = new Set(current);
+      next.add(id);
+      return next;
+    });
+  }
 
   function shown(item: ThreadItem): ThreadItem {
     if (item.kind === "system") return item;
@@ -224,7 +337,50 @@ export default function ConversationScreen() {
     setDraft("");
     conversationIdRef.current = null;
     setTimer("Off");
+    setAnimateIds(new Set());
+    entranceReadyRef.current = false;
+
+    let cancelled = false;
+    void (async () => {
+      const keys = [peerUserId, liveGroupId, id].filter((value): value is string => Boolean(value));
+      if (peerUserId) {
+        const known = await inboxConversationId(peerUserId);
+        if (known) keys.push(known);
+      }
+      const cached = await hydrateFromCache(keys);
+      if (cancelled || cached.length === 0) return;
+      setMessages((current) => {
+        const banner = current.find((message) => message.id === "e2ee");
+        return banner ? [banner, ...cached] : cached;
+      });
+    })();
+
+    const ready = setTimeout(() => {
+      entranceReadyRef.current = true;
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(ready);
+    };
   }, [id, isGroup, liveGroupId, peerUserId]);
+
+  useEffect(() => {
+    const show = Keyboard.addListener(
+      Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow",
+      (e) => setKeyboardHeight(e.endCoordinates.height),
+    );
+    const hide = Keyboard.addListener(
+      Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide",
+      () => setKeyboardHeight(0),
+    );
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, []);
+
+  const threadData = useMemo(() => [...messages].reverse(), [messages]);
+  const composerPad = keyboardHeight > 0 ? 8 : Math.max(insets.bottom, 10);
 
   useEffect(() => {
     const chatId = id ?? peerUserId;
@@ -251,6 +407,7 @@ export default function ConversationScreen() {
       const origin = configuredApiOrigin();
       if (!session || !origin || cancelled) return null;
       try {
+        await ensurePublishedKeys();
         const chat = await openLiveChat({
           httpBase: origin,
           sessionToken: session.sessionToken,
@@ -261,6 +418,7 @@ export default function ConversationScreen() {
           onMessage(item) {
             if (isExpired(item.expireAt)) return;
             const thread = shown(toThread(item));
+            if (entranceReadyRef.current) markAnimated(thread.id);
             setMessages((current) =>
               current.some((message) => message.id === thread.id) ? current : [...current, thread],
             );
@@ -271,6 +429,13 @@ export default function ConversationScreen() {
           return null;
         }
         conversationIdRef.current = chat.conversationId;
+        if (peer) {
+          void touchInboxThread({
+            peerUserId: peer,
+            conversationId: chat.conversationId,
+            preview: "End-to-end encrypted",
+          });
+        }
         setMessages((current) => {
           const opening = current.filter((message) => message.kind === "system");
           const live = chat.history.filter((item) => !isExpired(item.expireAt)).map((item) => shown(toThread(item)));
@@ -331,6 +496,7 @@ export default function ConversationScreen() {
           onMessage(item) {
             if (isExpired(item.expireAt)) return;
             const thread = shown(toThread(item));
+            if (entranceReadyRef.current) markAnimated(thread.id);
             setMessages((current) =>
               current.some((message) => message.id === thread.id) ? current : [...current, thread],
             );
@@ -342,6 +508,11 @@ export default function ConversationScreen() {
         }
         conversationIdRef.current = chat.conversationId;
         setMemberCount(chat.memberUserIds.length);
+        void touchGroupThread({
+          groupId: chat.conversationId,
+          title: chat.title,
+          preview: "Encrypted group",
+        });
         setMessages((current) => {
           const opening = current.filter((message) => message.kind === "system");
           const live = chat.history.filter((item) => !isExpired(item.expireAt)).map((item) => shown(toThread(item)));
@@ -540,6 +711,7 @@ export default function ConversationScreen() {
       expireAt,
     };
     setMessages((current) => [...current, local]);
+    markAnimated(localId);
     const cacheConversation = conversationIdRef.current ?? id ?? peerUserId ?? "local";
 
     if (liveGroupId) {
@@ -578,11 +750,17 @@ export default function ConversationScreen() {
 
     void (async () => {
       try {
+        await ensurePublishedKeys();
         await ensureSessionWithUser(peerUserId);
         const envelope = await encryptForPeer(peerUserId, text);
         const live = await liveRef.current;
         if (live) {
           const published = await live.publish(envelope, text, { expireAt, createdAt });
+          void touchInboxThread({
+            peerUserId,
+            conversationId: live.conversationId,
+            preview: text,
+          });
           setMessages((current) =>
             current.map((item) =>
               item.id === localId ? { ...item, id: published.id, envelope, receipts: "✓✓" } : item,
@@ -607,6 +785,13 @@ export default function ConversationScreen() {
           messageId = posted.id;
           conversationId = posted.conversationId;
           conversationIdRef.current = posted.conversationId;
+          void touchInboxThread({
+            peerUserId,
+            conversationId: posted.conversationId,
+            preview: text,
+          });
+        } else {
+          throw new Error("Not signed in or API URL missing");
         }
         await rememberPlaintext({
           id: messageId,
@@ -620,8 +805,13 @@ export default function ConversationScreen() {
             item.id === localId ? { ...item, id: messageId, envelope, receipts: "✓✓" } : item,
           ),
         );
-      } catch {
-        console.warn("[encrypt] message stayed on this device");
+      } catch (error) {
+        const line = sendFailureLine(error);
+        console.warn("[encrypt] message stayed on this device", line, error);
+        setMessages((current) => [
+          ...current.map((item) => (item.id === localId ? { ...item, receipts: "!" } : item)),
+          { id: `err-${Date.now()}`, kind: "system", text: line },
+        ]);
         await rememberPlaintext({
           id: localId,
           conversationId: cacheConversation,
@@ -645,8 +835,10 @@ export default function ConversationScreen() {
         if (current.some((item) => item.id === localId)) return current;
         return [...current, localAttachment(picked, localId, localOnly ? "✓" : "…", expireAt)];
       });
+      markAnimated(localId);
       if (localOnly || !peerUserId) return;
       try {
+        await ensurePublishedKeys();
         await ensureSessionWithUser(peerUserId);
         const session = await loadSession();
         const origin = configuredApiOrigin();
@@ -718,7 +910,7 @@ export default function ConversationScreen() {
   }
 
   return (
-    <Screen>
+    <View style={[styles.root, { paddingBottom: keyboardHeight }]}>
       <ScreenHeader
         title={title}
         subtitle={
@@ -747,21 +939,31 @@ export default function ConversationScreen() {
           </Pressable>
         }
       />
-      <ScrollView contentContainerStyle={styles.thread} showsVerticalScrollIndicator={false}>
-        {messages.map((m) => (
-          <MessageBubble key={m.id} message={m} />
-        ))}
-      </ScrollView>
+      <FlatList
+        style={styles.flex}
+        data={threadData}
+        keyExtractor={(item) => item.id}
+        inverted
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="interactive"
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.thread}
+        renderItem={({ item }) => (
+          <MessageBubble message={item} animate={animateIds.has(item.id)} />
+        )}
+      />
       {timer !== "Off" ? (
         <Text style={[typography.mono, styles.timerHint]}>{systemLineForTimer(timer)}</Text>
       ) : null}
-      <ChatComposer
-        value={draft}
-        onChangeText={setDraft}
-        onAttach={() => setAttachOpen(true)}
-        onTimer={() => setTimerOpen(true)}
-        onSend={send}
-      />
+      <View style={{ paddingBottom: composerPad }}>
+        <ChatComposer
+          value={draft}
+          onChangeText={setDraft}
+          onAttach={() => setAttachOpen(true)}
+          onTimer={() => setTimerOpen(true)}
+          onSend={send}
+        />
+      </View>
       <AttachmentSheet visible={attachOpen} onClose={() => setAttachOpen(false)} onPick={sendAttachment} />
       <DisappearingTimerSheet
         visible={timerOpen}
@@ -769,7 +971,7 @@ export default function ConversationScreen() {
         selected={timer}
         onSelect={selectTimer}
       />
-    </Screen>
+    </View>
   );
 }
 
@@ -832,10 +1034,17 @@ async function rowToThread(
 }
 
 const styles = StyleSheet.create({
+  root: {
+    flex: 1,
+    backgroundColor: colors.black,
+  },
+  flex: {
+    flex: 1,
+  },
   thread: {
     paddingHorizontal: 16,
-    paddingTop: 14,
-    paddingBottom: 4,
+    paddingVertical: 10,
+    flexGrow: 1,
   },
   iconBtn: {
     width: 36,

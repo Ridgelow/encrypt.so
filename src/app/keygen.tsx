@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Text, View, StyleSheet } from "react-native";
 import { router } from "expo-router";
 import { DeviceKeyStoreUnavailableError } from "@/e2ee";
@@ -20,33 +20,62 @@ const STEPS = [
 export default function KeyGenScreen() {
   const [progress, setProgress] = useState(0);
   const [doneCount, setDoneCount] = useState(0);
+  const [status, setStatus] = useState<string | null>(null);
   const { registerDevice } = useDeviceKeys();
+  const finished = useRef(false);
 
   useEffect(() => {
-    void registerDevice()
-      .catch((error: unknown) => {
-        if (error instanceof DeviceKeyStoreUnavailableError) return;
-        console.warn("[encrypt] device key provisioning did not complete");
-      })
-      .finally(() => {
-        void syncPushRegistration();
-      });
-  }, [registerDevice]);
+    let cancelled = false;
+    let tick: ReturnType<typeof setInterval> | null = null;
 
-  useEffect(() => {
-    const id = setInterval(() => {
+    tick = setInterval(() => {
       setProgress((p) => {
-        const next = Math.min(p + 4, 100);
-        setDoneCount(Math.min(STEPS.length, Math.floor((next / 100) * STEPS.length) + (next >= 62 ? 1 : 0)));
-        if (next >= 100) {
-          clearInterval(id);
-          setTimeout(() => router.replace("/profile"), 400);
-        }
+        // Cap visual progress at 90% until keys actually upload.
+        const next = Math.min(p + 3, 90);
+        setDoneCount(Math.min(STEPS.length - 1, Math.floor((next / 90) * (STEPS.length - 1))));
         return next;
       });
     }, 80);
-    return () => clearInterval(id);
-  }, []);
+
+    void (async () => {
+      try {
+        const result = await registerDevice();
+        if (cancelled || finished.current) return;
+        // `uploaded` is false when this install already published to the API earlier.
+        if (!result.uploaded && !result.serverDeviceId) {
+          setStatus("Keys stayed on this device — check your connection, then try again.");
+          if (tick) clearInterval(tick);
+          return;
+        }
+        finished.current = true;
+        if (tick) clearInterval(tick);
+        setProgress(100);
+        setDoneCount(STEPS.length);
+        void syncPushRegistration();
+        setTimeout(() => {
+          if (!cancelled) router.replace("/profile");
+        }, 400);
+      } catch (error: unknown) {
+        if (cancelled || finished.current) return;
+        if (tick) clearInterval(tick);
+        if (error instanceof DeviceKeyStoreUnavailableError) {
+          setStatus("Secure storage is unavailable on this device.");
+          return;
+        }
+        console.warn("[encrypt] device key provisioning did not complete", error);
+        setStatus(
+          error instanceof Error
+            ? error.message
+            : "Could not upload public keys. Pull to retry from Messages later.",
+        );
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (tick) clearInterval(tick);
+    };
+  }, [registerDevice]);
 
   const activeIndex = Math.min(STEPS.length - 1, doneCount);
 
@@ -54,7 +83,7 @@ export default function KeyGenScreen() {
     <Screen>
       <View style={styles.body}>
         <Text style={[typography.label, { fontSize: 10 }]}>Signal Protocol</Text>
-        <Text style={[typography.display, styles.title]}>Generating keys</Text>
+        <Text style={[typography.display, styles.title]}>generating keys</Text>
         <View style={styles.track}>
           <View style={[styles.fill, { width: `${progress}%` }]} />
           <View style={[styles.cursor, { left: `${Math.max(0, progress - 2)}%` }]} />
@@ -82,10 +111,9 @@ export default function KeyGenScreen() {
                 <Text
                   style={[
                     typography.mono,
-                    {
-                      fontSize: 12.5,
-                      color: active ? colors.white : done ? colors.chalk : colors.steel,
-                    },
+                    styles.stepText,
+                    pending && { color: colors.steel },
+                    active && { color: colors.white },
                   ]}
                 >
                   {step}
@@ -94,9 +122,24 @@ export default function KeyGenScreen() {
             );
           })}
         </View>
-        <Text style={[typography.body, styles.note]}>
-          Your private keys are generated on this device and never leave it.
-        </Text>
+        {status ? (
+          <Text
+            style={[typography.body, styles.note, { color: colors.smoke }]}
+            onPress={() => {
+              finished.current = false;
+              setStatus(null);
+              setProgress(0);
+              setDoneCount(0);
+              router.replace("/keygen");
+            }}
+          >
+            {status} Tap to retry.
+          </Text>
+        ) : (
+          <Text style={[typography.body, styles.note]}>
+            Your private keys are generated on this device and never leave it.
+          </Text>
+        )}
       </View>
     </Screen>
   );
@@ -120,6 +163,7 @@ const styles = StyleSheet.create({
     borderColor: colors.rule,
     overflow: "hidden",
     marginBottom: 4,
+    position: "relative",
   },
   fill: {
     position: "absolute",
@@ -160,6 +204,11 @@ const styles = StyleSheet.create({
   stepPending: {
     borderWidth: 1,
     borderColor: colors.rule,
+  },
+  stepText: {
+    fontSize: 12,
+    color: colors.smoke,
+    flex: 1,
   },
   note: {
     fontSize: 12,

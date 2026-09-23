@@ -1,6 +1,7 @@
 import { AttachmentError } from "./errors";
 import { decodeOpaqueEnvelope, encodeOpaqueEnvelope } from "./envelope";
 import type { OpaqueEnvelope } from "./session";
+import { fillRandom, newClientId } from "@/lib/id";
 
 /**
  * File bytes are encrypted with a fresh AES-256-GCM content key on device.
@@ -51,12 +52,6 @@ type Descriptor = {
   nonce: Uint8Array;
 };
 
-function bufferOf(bytes: Uint8Array): ArrayBuffer {
-  const copy = new ArrayBuffer(bytes.byteLength);
-  new Uint8Array(copy).set(bytes);
-  return copy;
-}
-
 export function bytesToBase64(bytes: Uint8Array): string {
   let binary = "";
   const chunk = 0x8000;
@@ -97,33 +92,78 @@ function cleanName(name: string | undefined): string | undefined {
   return cleaned;
 }
 
+function bufferOf(bytes: Uint8Array): ArrayBuffer {
+  const copy = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(copy).set(bytes);
+  return copy;
+}
+
 function wipe(bytes: Uint8Array): void {
   bytes.fill(0);
 }
 
-async function importAes(raw: Uint8Array, usage: "encrypt" | "decrypt"): Promise<CryptoKey> {
-  return crypto.subtle.importKey("raw", bufferOf(raw), { name: "AES-GCM" }, false, [usage]);
+async function loadNativeAes() {
+  if (nativeAes.ready) return;
+  const mod = await import("expo-crypto");
+  nativeAes.AESEncryptionKey = mod.AESEncryptionKey;
+  nativeAes.AESSealedData = mod.AESSealedData;
+  nativeAes.aesDecryptAsync = mod.aesDecryptAsync;
+  nativeAes.aesEncryptAsync = mod.aesEncryptAsync;
+  nativeAes.ready = true;
 }
 
+const nativeAes: {
+  ready?: boolean;
+  AESEncryptionKey?: typeof import("expo-crypto").AESEncryptionKey;
+  AESSealedData?: typeof import("expo-crypto").AESSealedData;
+  aesEncryptAsync?: typeof import("expo-crypto").aesEncryptAsync;
+  aesDecryptAsync?: typeof import("expo-crypto").aesDecryptAsync;
+} = {};
+
 async function aesEncrypt(key: Uint8Array, nonce: Uint8Array, plain: Uint8Array, aad: Uint8Array): Promise<Uint8Array> {
-  const cryptoKey = await importAes(key, "encrypt");
-  const encrypted = await crypto.subtle.encrypt(
-    { name: "AES-GCM", iv: bufferOf(nonce), additionalData: bufferOf(aad) },
-    cryptoKey,
-    bufferOf(plain),
-  );
-  return new Uint8Array(encrypted);
+  const subtle = globalThis.crypto?.subtle;
+  if (subtle) {
+    const cryptoKey = await subtle.importKey("raw", bufferOf(key), { name: "AES-GCM" }, false, ["encrypt"]);
+    const encrypted = await subtle.encrypt(
+      { name: "AES-GCM", iv: bufferOf(nonce), additionalData: bufferOf(aad) },
+      cryptoKey,
+      bufferOf(plain),
+    );
+    return new Uint8Array(encrypted);
+  }
+  await loadNativeAes();
+  const encryptionKey = await nativeAes.AESEncryptionKey!.import(key);
+  const sealed = await nativeAes.aesEncryptAsync!(plain, encryptionKey, {
+    additionalData: aad,
+    nonce: { bytes: nonce },
+  });
+  return (await sealed.ciphertext({ includeTag: true, encoding: "bytes" })) as Uint8Array;
 }
 
 async function aesDecrypt(key: Uint8Array, nonce: Uint8Array, cipher: Uint8Array, aad: Uint8Array): Promise<Uint8Array> {
-  const cryptoKey = await importAes(key, "decrypt");
+  const subtle = globalThis.crypto?.subtle;
+  if (subtle) {
+    const cryptoKey = await subtle.importKey("raw", bufferOf(key), { name: "AES-GCM" }, false, ["decrypt"]);
+    try {
+      const plain = await subtle.decrypt(
+        { name: "AES-GCM", iv: bufferOf(nonce), additionalData: bufferOf(aad) },
+        cryptoKey,
+        bufferOf(cipher),
+      );
+      return new Uint8Array(plain);
+    } catch {
+      throw new AttachmentError();
+    }
+  }
+  await loadNativeAes();
   try {
-    const plain = await crypto.subtle.decrypt(
-      { name: "AES-GCM", iv: bufferOf(nonce), additionalData: bufferOf(aad) },
-      cryptoKey,
-      bufferOf(cipher),
-    );
-    return new Uint8Array(plain);
+    const encryptionKey = await nativeAes.AESEncryptionKey!.import(key);
+    const sealed = nativeAes.AESSealedData!.fromParts(nonce, cipher, 16);
+    const plain = await nativeAes.aesDecryptAsync!(sealed, encryptionKey, {
+      additionalData: aad,
+      output: "bytes",
+    });
+    return plain instanceof Uint8Array ? plain : new Uint8Array();
   } catch {
     throw new AttachmentError();
   }
@@ -183,8 +223,8 @@ export async function sealAttachment(input: {
   if (input.bytes.byteLength < 1 || input.bytes.byteLength > ATTACHMENT_MAX_PLAINTEXT) throw new AttachmentError();
   if (!UUID.test(input.objectKey)) throw new AttachmentError();
 
-  const key = crypto.getRandomValues(new Uint8Array(KEY_BYTES));
-  const nonce = crypto.getRandomValues(new Uint8Array(NONCE_BYTES));
+  const key = fillRandom(new Uint8Array(KEY_BYTES));
+  const nonce = fillRandom(new Uint8Array(NONCE_BYTES));
   const mime = cleanMime(input.mime);
   const name = cleanName(input.name);
   let ciphertextBytes: Uint8Array;
@@ -263,7 +303,7 @@ export async function deliverSealedAttachment(input: {
     encrypt: input.encrypt,
   });
   await input.upload(minted.uploadUrl, sealed.ciphertextBytes);
-  const clientId = input.clientId ?? crypto.randomUUID();
+  const clientId = input.clientId ?? newClientId();
   const senderDeviceId = UUID.test(sealed.envelope.senderDeviceId) ? sealed.envelope.senderDeviceId : undefined;
   const body: AttachmentPostBody = {
     ciphertext: sealed.messageCiphertext,

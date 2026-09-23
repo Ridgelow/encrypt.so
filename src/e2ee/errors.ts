@@ -47,8 +47,8 @@ export class SessionKeysMissingError extends DeviceKeyError {
 }
 
 export class SessionBundleError extends DeviceKeyError {
-  constructor() {
-    super("No public prekey bundle is available for that user.");
+  constructor(message = "No public prekey bundle is available for that user.") {
+    super(message);
   }
 }
 

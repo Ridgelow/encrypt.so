@@ -1,4 +1,5 @@
 import { ApiError } from "@/services/errors";
+import { newClientId } from "@/lib/id";
 import type {
   AuthClient,
   DeviceResponse,
@@ -59,7 +60,7 @@ export function createMockAuthClient(): AuthClient & {
   return {
     async startPhoneAuth(phone) {
       if (!phone.trim()) throw new ApiError("phone required", 400);
-      const challengeId = crypto.randomUUID();
+      const challengeId = newClientId();
       challenges.set(challengeId, { phone });
       return { challengeId };
     },
@@ -70,10 +71,10 @@ export function createMockAuthClient(): AuthClient & {
       challenges.delete(challengeId);
       let user = [...users.values()].find((item) => item.phone === challenge.phone);
       if (!user) {
-        user = { id: crypto.randomUUID(), phone: challenge.phone, createdAt: Date.now() };
+        user = { id: newClientId(), phone: challenge.phone, createdAt: Date.now() };
         users.set(user.id, user);
       }
-      const sessionToken = crypto.randomUUID();
+      const sessionToken = newClientId();
       sessions.set(sessionToken, { userId: user.id, phone: user.phone });
       const response: SessionResponse = { sessionToken, userId: user.id };
       return response;
@@ -103,7 +104,7 @@ export function createMockAuthClient(): AuthClient & {
       const trimmed = name.trim();
       if (trimmed.length < 1 || trimmed.length > 64) throw new ApiError("invalid name", 400);
       const device: StoredDevice = {
-        id: crypto.randomUUID(),
+        id: newClientId(),
         userId: session.userId,
         name: trimmed,
         createdAt: Date.now(),

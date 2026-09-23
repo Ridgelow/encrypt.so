@@ -9,12 +9,12 @@ compatibility_date = "2026-09-22"
 [[d1_databases]]
 binding = "DB"
 database_name = "encrypt-so"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "14bda5dd-432f-4135-baa0-8eb91f96afb1"
 migrations_dir = "migrations"
 
 [[kv_namespaces]]
 binding = "SESSIONS"
-id = "00000000000000000000000000000000"
+id = "f1e4f075fa6a4229875a0060be0c1087"
 
 # One Durable Object per 1:1 conversation. Both members' sockets live in that
 # object, so fan-out is a local broadcast. A per-user inbox would need a second

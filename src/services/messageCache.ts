@@ -6,7 +6,7 @@ import { createChunkedStore, type KeyValueStore } from "@/e2ee/store";
  * iOS Secure Store values are chunked the same way as device keys.
  */
 export const MESSAGE_CACHE_KEY = "encrypt.messageCache";
-export const MESSAGE_CACHE_LIMIT = 40;
+export const MESSAGE_CACHE_LIMIT = 200;
 const MAX_PLAINTEXT_CHARS = 8_000;
 
 export type CachedMessage = {

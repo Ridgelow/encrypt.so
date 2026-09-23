@@ -188,8 +188,22 @@ export async function ensureSessionWithUser(input: EnsureSessionInput): Promise<
   let response: GetPrekeyBundleResponse;
   try {
     response = await input.getPrekeyBundle(input.sessionToken, input.peerUserId);
-  } catch {
-    throw new SessionBundleError();
+  } catch (error) {
+    const status =
+      error && typeof error === "object" && "status" in error && typeof (error as { status: unknown }).status === "number"
+        ? (error as { status: number }).status
+        : null;
+    const detail =
+      error instanceof Error && error.message ? error.message : "prekey fetch failed";
+    if (status === 404 || detail.includes("no prekey bundle")) {
+      throw new SessionBundleError(
+        "That contact has not published encryption keys yet. Ask them to open Messages and wait until it says Keys ready, then try again.",
+      );
+    }
+    if (status === 401) {
+      throw new SessionBundleError("Session expired — sign in again on this device.");
+    }
+    throw new SessionBundleError(`Could not fetch their keys (${detail}).`);
   }
   if (response.userId !== input.peerUserId) throw new SessionBundleError();
   const picked = pickDeviceBundle(response.bundles);

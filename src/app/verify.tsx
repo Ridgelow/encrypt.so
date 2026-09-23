@@ -1,10 +1,17 @@
-import { useRef, useState } from "react";
-import { Pressable, Text, TextInput, View, StyleSheet } from "react-native";
+import { useEffect, useRef, useState } from "react";
+import {
+  Keyboard,
+  Platform,
+  Pressable,
+  Text,
+  TextInput,
+  View,
+  StyleSheet,
+} from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router, useLocalSearchParams } from "expo-router";
 import { Button } from "@/components/ui/Button";
 import { Caret } from "@/components/ui/Caret";
-import { Screen } from "@/components/ui/Screen";
-import { ScreenHeader } from "@/components/ui/ScreenHeader";
 import { isApiConfigured, startPhoneAuth, toE164, verifyPhoneAuth } from "@/services/api";
 import { ApiError, isApiUnavailable } from "@/services/errors";
 import { syncPushRegistration } from "@/services/push";
@@ -15,6 +22,7 @@ import { typography } from "@/theme/typography";
 const LENGTH = 6;
 
 export default function VerifyCodeScreen() {
+  const insets = useSafeAreaInsets();
   const { phone, e164, challengeId: challengeParam } = useLocalSearchParams<{
     phone?: string;
     e164?: string;
@@ -24,14 +32,31 @@ export default function VerifyCodeScreen() {
   const [challengeId, setChallengeId] = useState(typeof challengeParam === "string" ? challengeParam : "");
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
   const inputRef = useRef<TextInput>(null);
 
+  useEffect(() => {
+    const show = Keyboard.addListener(
+      Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow",
+      (e) => setKeyboardHeight(e.endCoordinates.height),
+    );
+    const hide = Keyboard.addListener(
+      Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide",
+      () => setKeyboardHeight(0),
+    );
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, []);
+
   function goOffline() {
-    router.push("/keygen");
+    router.replace("/keygen");
   }
 
   async function onVerify() {
     if (busy) return;
+    Keyboard.dismiss();
     if (!challengeId) {
       goOffline();
       return;
@@ -51,7 +76,7 @@ export default function VerifyCodeScreen() {
         // Keystore is unavailable on web. The verified session still continues.
       }
       void syncPushRegistration();
-      router.push("/keygen");
+      router.replace("/keygen");
     } catch (err) {
       if (isApiUnavailable(err)) {
         goOffline();
@@ -78,13 +103,28 @@ export default function VerifyCodeScreen() {
     }
   }
 
+  const footerOffset = keyboardHeight > 0 ? keyboardHeight : Math.max(insets.bottom, 12);
+
   return (
-    <Screen>
-      <ScreenHeader onBack={() => router.back()} />
-      <Pressable style={styles.body} onPress={() => inputRef.current?.focus()}>
+    <View style={styles.root}>
+      <Pressable
+        style={[styles.body, { paddingTop: insets.top + 16, paddingBottom: 88 }]}
+        onPress={() => inputRef.current?.focus()}
+      >
+        <Pressable
+          onPress={() => router.back()}
+          hitSlop={12}
+          style={styles.back}
+          accessibilityLabel="Back"
+        >
+          <Text style={[typography.mono, { fontSize: 14, color: colors.chalk }]}>← back</Text>
+        </Pressable>
         <Text style={[typography.display, { fontSize: 24 }]}>Enter code</Text>
         <Text style={[typography.body, styles.help]}>
-          Sent to <Text style={[typography.mono, { color: colors.chalk }]}>{phone ?? "[ PHONE NUMBER ]"}</Text>
+          Sent to{" "}
+          <Text style={[typography.mono, { color: colors.chalk }]}>
+            {phone ?? "[ PHONE NUMBER ]"}
+          </Text>
         </Text>
         <View style={styles.boxes}>
           {Array.from({ length: LENGTH }).map((_, i) => {
@@ -114,18 +154,25 @@ export default function VerifyCodeScreen() {
         </Pressable>
         {note ? <Text style={[typography.mono, styles.note]}>{note}</Text> : null}
       </Pressable>
-      <View style={styles.footer}>
-        <Button label="Verify" disabled={busy} onPress={() => void onVerify()} />
+
+      <View style={[styles.footer, { bottom: footerOffset }]}>
+        <Button label={busy ? "…" : "Verify"} disabled={busy} onPress={() => void onVerify()} />
       </View>
-    </Screen>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  root: {
+    flex: 1,
+    backgroundColor: colors.black,
+  },
   body: {
     flex: 1,
     paddingHorizontal: 22,
-    paddingTop: 28,
+  },
+  back: {
+    marginBottom: 18,
   },
   help: {
     fontSize: 13.5,
@@ -162,7 +209,14 @@ const styles = StyleSheet.create({
     marginTop: 16,
   },
   footer: {
+    position: "absolute",
+    left: 0,
+    right: 0,
     paddingHorizontal: 22,
-    paddingBottom: 16,
+    paddingTop: 12,
+    paddingBottom: 12,
+    backgroundColor: colors.black,
+    borderTopWidth: 1,
+    borderTopColor: colors.rule,
   },
 });
